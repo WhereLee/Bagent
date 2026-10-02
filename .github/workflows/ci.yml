@@ -7,25 +7,48 @@ on:
     branches: [main, master]
 
 jobs:
-  test:
+  unit-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
-
       - name: Install dependencies (CPU torch to avoid CUDA bloat)
         run: |
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
-
       - name: Syntax / import compile check
         run: python -m compileall -q app scripts
-
       - name: Unit tests
         run: pytest -q
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure .env is not tracked
+        run: |
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo "::error::.env 被提交到仓库，密钥有泄露风险"; exit 1
+          fi
+          echo "OK: .env 未被跟踪"
+      - name: Scan tracked files for key/token patterns
+        run: |
+          if git grep -nEI 'sk-[A-Za-z0-9]{16,}|BEGIN (RSA|OPENSSH) PRIVATE KEY' -- ':!*.md'; then
+            echo "::error::在跟踪的文件中发现疑似密钥串"; exit 1
+          fi
+          echo "OK: 未发现密钥模式"
+
+  docker-build:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t bagent-rag:ci .
+      - name: Smoke (image metadata only, 需 DB/模型才能起服务)
+        run: docker image inspect bagent-rag:ci --format '{{.Config.Cmd}}'

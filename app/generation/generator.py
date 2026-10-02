@@ -9,6 +9,7 @@ from app.generation.faithfulness import REFUSAL_PHRASE, assess_faithfulness
 from app.generation.llm import get_llm
 from app.generation.prompts import SYSTEM_BASE, SYSTEM_CITED
 from app.generation.rewriter import rewrite_query
+from app.observability.metrics import RAG_QUALITY, STAGE_LATENCY
 from app.retrieval.retriever import retrieve
 from app.retrieval.store import RetrievedChunk
 
@@ -57,7 +58,7 @@ def answer_query(
     # 3) 生成（可选强制引用；citation 编号与检索列表 1:1）
     context = _build_context(chunks)
     system = SYSTEM_CITED if force_citation else SYSTEM_BASE
-    text = get_llm().complete(system=system, user=f"【参考资料】\n{context}\n\n【问题】\n{rewritten}")
+    text = get_llm().generate(system=system, user=f"【参考资料】\n{context}\n\n【问题】\n{rewritten}")
 
     # 4) 引用校验：剔除越界引用
     num = len(chunks)
@@ -69,11 +70,19 @@ def answer_query(
                  sources=[{"id": c.chunk_id, "source": c.source, "score": round(c.score, 4)} for c in chunks],
                  invalid_citations=invalid)
     if check_faith:
-        report = assess_faithfulness(context, text, get_llm(), threshold=s.faithfulness_threshold)
+        with STAGE_LATENCY.labels(stage="faithfulness").time():
+            report = assess_faithfulness(context, text, get_llm(), threshold=s.faithfulness_threshold)
         ans.faithfulness = report["faithfulness"]
         ans.hallucination_rate = report.get("hallucination_rate")
         ans.grounded = report["grounded"]
         ans.is_refusal = report["is_refusal"]
         # 有内容但忠实度过低 -> 低置信（不假装确定）
         ans.low_confidence = (not report["is_refusal"]) and (not report["grounded"])
+    # 质量信号计数
+    if ans.is_refusal:
+        RAG_QUALITY.labels(outcome="refusal").inc()
+    elif ans.low_confidence:
+        RAG_QUALITY.labels(outcome="low_confidence").inc()
+    elif ans.grounded:
+        RAG_QUALITY.labels(outcome="grounded").inc()
     return ans

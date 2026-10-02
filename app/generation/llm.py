@@ -4,6 +4,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.config import get_settings
+from app.observability.metrics import LLM_TOKENS, STAGE_LATENCY
 
 
 class LLMClient:
@@ -29,7 +30,16 @@ class LLMClient:
             temperature=temperature,
             **kwargs,
         )
+        usage = getattr(resp, "usage", None)
+        if usage:
+            LLM_TOKENS.labels(type="input").inc(usage.prompt_tokens or 0)
+            LLM_TOKENS.labels(type="output").inc(usage.completion_tokens or 0)
         return resp.choices[0].message.content or ""
+
+    def generate(self, system: str, user: str, temperature: float = 0.1) -> str:
+        """带阶段时延埋点的生成调用。"""
+        with STAGE_LATENCY.labels(stage="llm_generate").time():
+            return self.complete(system, user, temperature)
 
 
 @lru_cache

@@ -81,3 +81,19 @@ M2/M3 会用 **golden set 上的 recall@k 消融实验**比较不同 chunk_size/
 **评估中的关键手法——负向对照**：小语料+强模型下 base/cited 都满忠实，看不出差异。为证明"评估器能抓到问题"，
 加入 no-RAG 对照（去检索证据只凭模型知识回答）：faithfulness 塔到 0、幻觉率1.0、拒答准确降到0.444。
 这直接验证了指标有效性与证据链的价值，而不是自证一个永远满分的空评估。
+
+## 10. M4：可观测、限流、部署
+
+**可观测**：结构化 JSON 日志 + contextvar 存 `request_id` 贯穿全请求（响应头回写）；Prometheus 指标
+（HTTP 数/时延、阶段耗时、LLM token、质量信号、限流拒绝）。用 `prometheus-client`（行业标准、依赖轻）。
+边界：多进程 worker 需 `PROMETHEUS_MULTIPROC_DIR`+multiprocess 模式；当前单 worker 用默认 REGISTRY。
+
+**限流**：令牌桶（rate+burst），按 IP。**内存存桶 + 多实例迁 Redis(Lua 原子扣减) 的路径写死**：
+`RateLimiter.allow(key)` 接口不变、只换存储。与 BM25 载体同理：算法不变、载体可换。
+
+**压测**：Locust（`locustfile.py`），`/search` 主力(纯检索、不花 LLM)，`/query` 低权重。属集成，不进 CI。
+
+**Docker**：镜像只装代码+依赖；**模型权重不打进镜像**（1GB+且离线环境），compose 挂载 `./models` +
+`HF_HUB_OFFLINE=1`。db 用 `pgvector/pgvector:pg16`，宿主机映射 5433 避开本机 5432。
+
+**CI 三 job**：`unit-tests`（hermetic）、`secret-scan`（守 .env/密钥不入库）、`docker-build`（验证镜像可构建，仅 push 触发）。

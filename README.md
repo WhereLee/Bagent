@@ -81,7 +81,7 @@ tests/  docs/  models/
 - **M1 ✅**：端到端闭环 —— 解析→切块→向量→pgvector→MiMo 生成，含引用与拒答、FastAPI、CLI。
 - **M2 ✅**：检索质量 —— 混合检索(BM25+jieba / 稠密 / RRF) + Cross-Encoder rerank + 父子块(small-to-big)；golden set + recall@k/MRR/nDCG 消融。
 - **M3 ✅**：生成质量+证据链 —— faithfulness/幻觉率(LLM-as-judge)、引用校验与拒答收紧、多轮 query 改写、生成侧消融(含负向对照)。
-- **M4**：上线运维 —— 可观测(trace)、限流、压测、Docker 部署、CI 增强。
+- **M4 ✅**：上线运维 —— 结构化 JSON 日志 + request_id、Prometheus 指标(/metrics)、令牌桶限流(429)、Locust 压测、Docker/compose 部署、CI 增强(secret-scan + docker-build)。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
@@ -107,5 +107,19 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 | cited(强制引用) | 1.000 | 0.000 | 1.000 | 0 |
 | **no-RAG(无证据)** | **0.000** | **1.000** | **0.444** | 9 |
 
-结论：负向对照证明 faithfulness 确实能**抓到幻觉**（去证据后塌到 0）；带证据链则满忠实、
+结论：负向对照证明 faithfulness 确实能**抓到幻觉**（去证据后塔到 0）；带证据链则满忠实、
 且不可答题正确拒答。base/cited 本语料上未拉开差距（语料干净、模型守规矩），不粉饰。
+
+## 可观测 / 限流 / 压测 / 部署（M4）
+
+- **指标**：`GET /metrics`（Prometheus）—— HTTP 请求数/时延直方图、各阶段耗时(retrieval/rerank/llm/faithfulness)、
+  LLM token 用量、拒答与低置信计数、限流拒绝计数。
+- **日志**：结构化 JSON，每请求一个 `request_id` 贯穿（响应头 `X-Request-ID` 同步返回）。
+- **限流**：令牌桶，按客户端 IP；超限返回 **429 + Retry-After**（burst=10、5/s）。实测并发 30 → **10 放行 / 20 拒绝**。
+- **多轮**：`POST /chat` 传 `history`，服务端做查询改写（指代消解）后检索生成。
+- **压测**：`pip install -r requirements-dev.txt` 后
+  `locust -f locustfile.py --host http://127.0.0.1:8000 --headless -u 50 -r 10 -t 60s`。
+- **部署**：`docker compose up -d --build`（起 pgvector 库 + app；模型权重挂载 `./models`，不入镜像）。
+
+### HTTP 端点
+`GET /health`、`GET /metrics`、`POST /ingest`、`POST /search`、`POST /query`、`POST /chat`（文档 `/docs`）。

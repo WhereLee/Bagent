@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     app_port: int = 8000
     log_level: str = "INFO"
 
+    # --- Rate limit (M4) ---
+    rate_limit_enabled: bool = True
+    rate_limit_per_sec: float = 5.0   # 每 IP 每秒补充令牌数
+    rate_limit_burst: int = 10        # 突发容量
+
     @property
     def sqlalchemy_url(self) -> str:
         """SQLAlchemy 2.x + psycopg3 的连接串。"""

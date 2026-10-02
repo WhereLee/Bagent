@@ -1,0 +1,5 @@
+# 开发/工具依赖（不进运行时镜像）。安装：pip install -r requirements-dev.txt
+-r requirements.txt
+
+# 压测
+locust>=2.30,<3

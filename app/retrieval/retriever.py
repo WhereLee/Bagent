@@ -7,6 +7,7 @@ from __future__ import annotations
 from app.config import get_settings
 from app.db.session import get_session
 from app.ingestion.embedder import get_embedder
+from app.observability.metrics import STAGE_LATENCY
 from app.retrieval.fusion import rrf_fuse
 from app.retrieval.lexical import get_lexical_retriever
 from app.retrieval.rerank import get_reranker
@@ -34,29 +35,31 @@ def retrieve(
     qvec = get_embedder().encode_query(query)
 
     session = get_session()
-    try:
-        dense_hits = vector_search(session, qvec, cand_n)
-        dense_ids = [h.chunk_id for h in dense_hits]
+    with STAGE_LATENCY.labels(stage="retrieval").time():
+        try:
+            dense_hits = vector_search(session, qvec, cand_n)
+            dense_ids = [h.chunk_id for h in dense_hits]
 
-        if mode == "hybrid":
-            lexical_ids = [cid for cid, _ in get_lexical_retriever().search(query, cand_n)]
-            fused = rrf_fuse([dense_ids, lexical_ids], k=s.rrf_k)
-            ordered_ids = [cid for cid, _ in fused]
-        else:  # dense
-            ordered_ids = dense_ids
+            if mode == "hybrid":
+                lexical_ids = [cid for cid, _ in get_lexical_retriever().search(query, cand_n)]
+                fused = rrf_fuse([dense_ids, lexical_ids], k=s.rrf_k)
+                ordered_ids = [cid for cid, _ in fused]
+            else:  # dense
+                ordered_ids = dense_ids
 
-        pool = load_children(session, ordered_ids)
-        candidates = [pool[cid] for cid in ordered_ids if cid in pool]
+            pool = load_children(session, ordered_ids)
+            candidates = [pool[cid] for cid in ordered_ids if cid in pool]
 
-        if do_rerank and candidates:
-            scores = get_reranker().rerank(query, [c.content for c in candidates])
-            for c, sc in zip(candidates, scores):
-                c.score = sc
-            candidates.sort(key=lambda c: c.score, reverse=True)
+            if do_rerank and candidates:
+                with STAGE_LATENCY.labels(stage="rerank").time():
+                    scores = get_reranker().rerank(query, [c.content for c in candidates])
+                for c, sc in zip(candidates, scores):
+                    c.score = sc
+                candidates.sort(key=lambda c: c.score, reverse=True)
 
-        top = candidates[:top_k]
-        if s.retrieve_parent:
-            expand_to_parents(session, top)
-        return top
-    finally:
-        session.close()
+            top = candidates[:top_k]
+            if s.retrieve_parent:
+                expand_to_parents(session, top)
+            return top
+        finally:
+            session.close()
