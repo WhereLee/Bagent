@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import ROOT_DIR, get_settings  # noqa: E402
 from app.evaluation.metrics import mrr, ndcg_at_k, recall_at_k  # noqa: E402
+from app.evaluation.stats import summarize  # noqa: E402
 from app.observability.logging import configure_logging  # noqa: E402
 from app.retrieval.retriever import retrieve  # noqa: E402
 
@@ -55,20 +56,23 @@ def main(k: int, limit: int, no_rerank: bool = False) -> None:
 
     configs = [c for c in CONFIGS if not (no_rerank and "rerank" in c[0])]
     fetch = max(k * 3, 30)  # 多取再折叠，保证有足够去重文档数
-    print(f"\n# DuRetrieval eval (doc-level, K={k}), {len(golden)} queries\n", flush=True)
+    print(f"\n# DuRetrieval eval (doc-level, K={k}), {len(golden)} queries — 均值±bootstrap95%CI\n", flush=True)
     cols = [f"recall@{k}", "mrr", f"ndcg@{k}"]
-    print(f"{'config':<20}" + "".join(f"{c:>12}" for c in cols), flush=True)
-    print("-" * (20 + 12 * len(cols)), flush=True)
+    print(f"{'config':<20}" + "".join(f"{c:>22}" for c in cols), flush=True)
+    print("-" * (20 + 22 * len(cols)), flush=True)
 
     for name, kw in configs:
-        acc = {c: 0.0 for c in cols}
+        vals = {c: [] for c in cols}
         for item in golden:
             ranked = ranked_sources(item["question"], fetch, **kw)
             rel = set(item["relevant_sources"])
-            acc[f"recall@{k}"] += recall_at_k(ranked, rel, k)
-            acc["mrr"] += mrr(ranked, rel)
-            acc[f"ndcg@{k}"] += ndcg_at_k(ranked, rel, k)
-        row = f"{name:<20}" + "".join(f"{acc[c]/len(golden):>12.3f}" for c in cols)
+            vals[f"recall@{k}"].append(recall_at_k(ranked, rel, k))
+            vals["mrr"].append(mrr(ranked, rel))
+            vals[f"ndcg@{k}"].append(ndcg_at_k(ranked, rel, k))
+        row = f"{name:<20}"
+        for c in cols:
+            sm = summarize(vals[c])
+            row += f"{sm['mean']:>9.3f}±{(sm['ci_high']-sm['ci_low'])/2:<12.3f}"
         print(row, flush=True)
 
 

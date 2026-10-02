@@ -1,98 +1,128 @@
-"""在 RGB(中文) 上评测生成侧证据链：噪声鲁棒 + 负例拒答。
+"""在 RGB(中文) 上评测生成侧证据链：噪声鲁棒/负例拒答 + 反事实 + 信息整合。
 
-RGB 自带文档(positive=金标准/negative=噪声)，不经我们的库检索，直接构造上下文测生成：
-- 噪声鲁棒：给 positive+negative，测答案命中(gold 出现)与 faithfulness。
-- 负例拒答：只给 negative(无 gold)，测系统是否正确拒答。
-集成脚本（调 MiMo），不进 CI。先浅克隆 RGB 到 data/_ext/RGB。
-用法： .venv\\Scripts\\python.exe scripts\\eval_rgb.py [-n 15]
+RGB 自带文档(positive=金标准/positive_wrong=错误信息/negative=噪声)，评测不经我们的检索库，
+直接构造上下文测生成侧。子集：
+- noise_reject(zh.json)：噪声鲁棒(命中+faithfulness)、负例拒答(只给噪声→应拒)。
+- counterfactual(zh_fact.json)：只给"错误文档"→模型是否被带偏(答 fakeanswer)。
+- integration(zh_int.json)：需综合两条事实→两条都答对率。
+集成脚本(调 LLM)，不进 CI。先浅克隆 RGB 到 data/_ext/RGB。
+用法： python scripts/eval_rgb.py -n 6 --subsets noise_reject counterfactual integration
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.config import ROOT_DIR  # noqa: E402
+from app.config import ROOT_DIR, get_settings  # noqa: E402
 from app.generation.faithfulness import REFUSAL_PHRASE, assess_faithfulness  # noqa: E402
 from app.generation.llm import get_llm  # noqa: E402
-from app.generation.prompts import SYSTEM_BASE, SYSTEM_CITED  # noqa: E402
+from app.generation.prompts import SYSTEM_CITED  # noqa: E402
+from app.observability.logging import configure_logging  # noqa: E402
 
+_RGB = ROOT_DIR / "data" / "_ext" / "RGB" / "data"
 _WS = re.compile(r"\s+")
-RGB_PATH = ROOT_DIR / "data" / "_ext" / "RGB" / "data" / "zh.json"
 
 
-def _norm(s: str) -> str:
-    return _WS.sub("", s or "")
+def _norm(s):
+    if isinstance(s, list):
+        s = " ".join(str(x) for x in s)
+    return _WS.sub("", str(s))
 
 
-def _context(docs: list[str]) -> str:
-    return "\n\n".join(f"[{i}] {d}" for i, d in enumerate(docs, start=1))
+def _flat_docs(x):
+    """positive/negative 可能是嵌套 list，展平为字符串文档列表。"""
+    out = []
+    for e in (x or []):
+        out.extend(_flat_docs(e) if isinstance(e, list) else [str(e)])
+    return out
 
 
-def _answer(system: str, query: str, ctx: str) -> str:
+def _read(fname):
+    p = _RGB / fname
+    if not p.exists():
+        sys.exit(f"缺 {p}；先 git clone --depth 1 https://github.com/chen700564/RGB.git data/_ext/RGB")
+    return [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
+def _ctx(docs):
+    return "\n\n".join(f"[{i}] {d}" for i, d in enumerate(docs, 1))
+
+
+def _ans(system, query, ctx):
     return get_llm().complete(system=system, user=f"【参考资料】\n{ctx}\n\n【问题】\n{query}")
 
 
-def load_items(n: int) -> list[dict]:
-    if not RGB_PATH.exists():
-        sys.exit("RGB 数据缺失，请先: git clone --depth 1 https://github.com/chen700564/RGB.git data/_ext/RGB")
-    items = []
-    with RGB_PATH.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            r = json.loads(line)
-            if r.get("positive") and r.get("negative"):
-                items.append(r)
-            if len(items) >= n:
-                break
-    return items
-
-
-def main(n: int) -> None:
-    items = load_items(n)
-    llm = get_llm()
-
-    hit = faith_sum = faith_cnt = 0          # 噪声鲁棒（cited）
-    rej_cited = rej_base = 0                 # 负例拒答：强制引用 vs 基础提示
-    total = len(items)
-
-    for r in items:
-        golds = [_norm(a) for a in r["answer"] if isinstance(a, str)]
-        pos, neg = r["positive"], r["negative"]
-
-        # 噪声鲁棒：positive + 全部 negative 作上下文
-        ctx = _context(pos + neg[:5])
-        ans = _answer(SYSTEM_CITED, r["query"], ctx)
-        if any(g and g in _norm(ans) for g in golds):
+def eval_noise_reject(n):
+    rows = _read("zh.json")[:n]
+    hit = faith_sum = 0.0
+    rej = 0
+    cnt = 0
+    for r in rows:
+        pos, neg = _flat_docs(r.get("positive")), _flat_docs(r.get("negative"))
+        golds = [_norm(a) for a in (r["answer"] if isinstance(r["answer"], list) else [r["answer"]])]
+        ctx = _ctx(pos + neg[:5])
+        a = _ans(SYSTEM_CITED, r["query"], ctx)
+        if any(g and g in _norm(a) for g in golds):
             hit += 1
-        rep = assess_faithfulness(ctx, ans, llm)
+        rep = assess_faithfulness(ctx, a, get_llm())
         if rep["faithfulness"] is not None:
-            faith_sum += rep["faithfulness"]; faith_cnt += 1
+            faith_sum += rep["faithfulness"]; cnt += 1
+        # 只给噪声 -> 应拒
+        a2 = _ans(SYSTEM_CITED, r["query"], _ctx(neg[:5]))
+        if a2.strip().startswith(REFUSAL_PHRASE):
+            rej += 1
+    m = len(rows)
+    print(f"[noise_reject n={m}] 命中={hit/m:.3f} faithfulness={(faith_sum/cnt if cnt else 0):.3f} 负例拒答={rej/m:.3f}")
 
-        # 负例拒答：只给 negative（无 gold）
-        ctx_neg = _context(neg[:5])
-        ans_cited = _answer(SYSTEM_CITED, r["query"], ctx_neg)
-        ans_base = _answer(SYSTEM_BASE, r["query"], ctx_neg)
-        if ans_cited.strip().startswith(REFUSAL_PHRASE):
-            rej_cited += 1
-        if ans_base.strip().startswith(REFUSAL_PHRASE):
-            rej_base += 1
 
-    print(f"\n# RGB(zh) 生成侧评测, n={total}\n")
-    print(f"噪声鲁棒-答案命中率(cited)     : {hit/total:.3f}")
-    print(f"噪声鲁棒-平均faithfulness(cited): {faith_sum/faith_cnt:.3f}" if faith_cnt else "faithfulness: n/a")
-    print(f"负例拒答-强制引用 SYSTEM_CITED   : {rej_cited/total:.3f}")
-    print(f"负例拒答-基础提示 SYSTEM_BASE    : {rej_base/total:.3f}")
-    print("\n说明：拒答率越高越好(负例)；对比两种提示可量化'收紧引用/提示'对拒答的影响。")
+def eval_counterfactual(n):
+    rows = _read("zh_fact.json")[:n]
+    misled = correct = 0
+    for r in rows:
+        wrong = _flat_docs(r.get("positive_wrong"))
+        true_ans, fake_ans = _norm(r["answer"]), _norm(r.get("fakeanswer", ""))
+        a = _ans(SYSTEM_CITED, r["query"], _ctx(wrong[:3]))
+        na = _norm(a)
+        if fake_ans and fake_ans in na:
+            misled += 1
+        elif true_ans and true_ans in na:
+            correct += 1
+    m = len(rows)
+    print(f"[counterfactual n={m}] 被错误文档带偏率={misled/m:.3f} 顶住错误答对率={correct/m:.3f}"
+          "  (被带偏=忠实于错误上下文，是纯 RAG 的固有软肋)")
 
+
+def eval_integration(n):
+    rows = _read("zh_int.json")[:n]
+    both = 0
+    for r in rows:
+        pos = _flat_docs(r.get("positive"))
+        a1, a2 = _norm(r.get("asnwer1", r.get("answer1", ""))), _norm(r.get("answer2", ""))
+        na = _norm(_ans(SYSTEM_CITED, r["query"], _ctx(pos)))
+        if (a1 and a1 in na) and (a2 and a2 in na):
+            both += 1
+    m = len(rows)
+    print(f"[integration n={m}] 两条子事实都答对率={both/m:.3f}")
+
+
+SUBSETS = {
+    "noise_reject": eval_noise_reject,
+    "counterfactual": eval_counterfactual,
+    "integration": eval_integration,
+}
 
 if __name__ == "__main__":
+    configure_logging(get_settings().log_level)
     ap = argparse.ArgumentParser()
-    ap.add_argument("-n", type=int, default=15)
-    main(ap.parse_args().n)
+    ap.add_argument("-n", type=int, default=6)
+    ap.add_argument("--subsets", nargs="*", default=["noise_reject", "counterfactual", "integration"])
+    a = ap.parse_args()
+    print(f"\n# RGB(zh) 生成侧评测 n={a.n}\n")
+    for name in a.subsets:
+        SUBSETS[name](a.n)

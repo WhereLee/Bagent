@@ -35,3 +35,6 @@ logs_*.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# 运维备忘（含服务器 IP/服务清单，基础设施信息不外泄）
+docs/服务器运维备忘.md

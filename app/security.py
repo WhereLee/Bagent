@@ -13,6 +13,7 @@ _INJECTION_PATTERNS = [
     re.compile(r"ignore\s+(all\s+)?(previous|above|prior)\s+instructions", re.I),
     re.compile(r"忽略(以上|上述|之前)(的)?(所有)?指令", re.I),
     re.compile(r"disregard\s+the\s+system\s+prompt", re.I),
+    re.compile(r"new\s+instructions\s*:", re.I),
     re.compile(r"\bsystem\s+prompt\b", re.I),
     re.compile(r"^\s*(system|assistant)\s*:", re.I | re.M),
     re.compile(r"<\|.*?\|>"),
