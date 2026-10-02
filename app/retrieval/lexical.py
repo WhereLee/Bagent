@@ -19,6 +19,9 @@ from sqlalchemy import func, select
 
 from app.db.models import Chunk, Document
 from app.db.session import get_session
+from app.observability.logging import get_logger, log_event
+
+_log = get_logger("lexical")
 
 # 常见中文标点/空白，分词后过滤
 _STOP_CHARS = set("，。、；：？！“”‘’（）《》〈〉【】…—－-_,.;:?!'\"()<>[]{}\n\r\t /\\")
@@ -123,6 +126,7 @@ class LexicalRetriever:
             docs = [(r.id, tokenize(r.content)) for r in rows]
             self._index.build(docs)
             self._generation = gen
+            log_event(_log, "info", "bm25_rebuild", n_docs=self._index.n, generation=str(gen))
 
     def search(self, query: str, top_k: int) -> list[tuple[int, float]]:
         session = get_session()

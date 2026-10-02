@@ -16,8 +16,9 @@ os.environ.setdefault("PG_DATABASE", "bagent_bench")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.config import ROOT_DIR  # noqa: E402
+from app.config import ROOT_DIR, get_settings  # noqa: E402
 from app.evaluation.metrics import mrr, ndcg_at_k, recall_at_k  # noqa: E402
+from app.observability.logging import configure_logging  # noqa: E402
 from app.retrieval.retriever import retrieve  # noqa: E402
 
 # 消融矩阵：dense / hybrid / hybrid+rerank(不同 candidate_n，体现 #2 扫参)
@@ -42,6 +43,7 @@ def ranked_sources(query: str, fetch: int, **kw) -> list[str]:
 
 
 def main(k: int, limit: int, no_rerank: bool = False) -> None:
+    configure_logging(get_settings().log_level)
     golden = [
         json.loads(l)
         for l in (ROOT_DIR / "data" / "benchmark" / "duretrieval.jsonl").read_text(encoding="utf-8").splitlines()

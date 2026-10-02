@@ -22,6 +22,7 @@ import prepare_dataset as pd  # noqa: E402  (import 时设定 bench 环境)
 from app.config import ROOT_DIR, get_settings  # noqa: E402
 from app.db.session import get_session  # noqa: E402
 from app.evaluation.metrics import mrr, ndcg_at_k, recall_at_k  # noqa: E402
+from app.observability.logging import configure_logging  # noqa: E402
 from app.retrieval.retriever import retrieve  # noqa: E402
 
 SIZES = [80, 150, 300]
@@ -54,6 +55,7 @@ def ranked_sources(query, fetch=30, **kw):
 
 
 def main() -> None:
+    configure_logging()
     rows = []
     for child in SIZES:
         os.environ["CHUNK_CHILD_TOKENS"] = str(child)

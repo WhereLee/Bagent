@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.generation.generator import answer_query  # noqa: E402
 from app.ingestion.indexer import ingest_file  # noqa: E402
+from app.observability.logging import configure_logging  # noqa: E402
+from app.config import get_settings  # noqa: E402
 
 SUPPORTED = {".pdf", ".docx", ".html", ".htm", ".md", ".markdown", ".txt"}
 
@@ -52,6 +54,7 @@ def cmd_query(text: str, top_k: int | None) -> None:
 
 
 def main() -> None:
+    configure_logging(get_settings().log_level)
     parser = argparse.ArgumentParser(description="Bagent RAG CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
 

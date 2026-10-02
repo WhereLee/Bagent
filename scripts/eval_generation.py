@@ -21,6 +21,7 @@ from app.evaluation.generation_metrics import (  # noqa: E402
 from app.generation.faithfulness import REFUSAL_PHRASE, assess_faithfulness  # noqa: E402
 from app.generation.generator import answer_query  # noqa: E402
 from app.generation.llm import get_llm  # noqa: E402
+from app.observability.logging import configure_logging  # noqa: E402
 from app.retrieval.retriever import retrieve  # noqa: E402
 
 CONFIGS = [
@@ -60,6 +61,7 @@ def _is_refusal(ans) -> bool:
 
 
 def run(n_answerable: int) -> None:
+    configure_logging()
     gdir = ROOT_DIR / "data" / "golden"
     answerable = _load(gdir / "golden.jsonl")[:n_answerable]
     unanswerable = _load(gdir / "golden_unanswerable.jsonl")

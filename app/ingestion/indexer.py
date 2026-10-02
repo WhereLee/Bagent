@@ -11,7 +11,10 @@ from app.db.session import get_session
 from app.ingestion.chunking import chunk_parent_child
 from app.ingestion.embedder import get_embedder
 from app.ingestion.parser import parse_file
+from app.observability.logging import get_logger, log_event
 from app.retrieval.store import index_document
+
+_log = get_logger("ingest")
 
 
 @dataclass
@@ -58,3 +61,14 @@ def ingest_file(path: str | Path) -> IngestResult:
         session.close()
 
     return IngestResult(source, doc_id, n_children, len(parents), action)
+
+
+def ingest_paths(paths) -> list[IngestResult]:
+    """批量入库并逐条结构化日志。"""
+    results = []
+    for p in paths:
+        r = ingest_file(p)
+        log_event(_log, "info", "ingest", source=r.source, action=r.action,
+                  parents=r.n_parents, children=r.n_children, document_id=r.document_id)
+        results.append(r)
+    return results

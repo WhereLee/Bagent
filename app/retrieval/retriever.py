@@ -7,6 +7,7 @@ from __future__ import annotations
 from app.config import get_settings
 from app.db.session import get_session
 from app.ingestion.embedder import get_embedder
+from app.observability.logging import get_logger, log_event
 from app.observability.metrics import STAGE_LATENCY
 from app.retrieval.fusion import rrf_fuse
 from app.retrieval.lexical import get_lexical_retriever
@@ -17,6 +18,8 @@ from app.retrieval.store import (
     load_children,
     vector_search,
 )
+
+_log = get_logger("retrieval")
 
 
 def retrieve(
@@ -63,6 +66,11 @@ def retrieve(
             top = candidates[:top_k]
             if s.retrieve_parent:
                 expand_to_parents(session, top)
+            log_event(
+                _log, "info", "retrieval",
+                mode=mode, rerank=do_rerank, candidate_n=cand_n, top_k=top_k,
+                n_hits=len(top), top_score=round(top[0].score, 4) if top else None,
+            )
             return top
         finally:
             session.close()

@@ -9,9 +9,12 @@ from app.generation.faithfulness import REFUSAL_PHRASE, assess_faithfulness
 from app.generation.llm import get_llm
 from app.generation.prompts import SYSTEM_BASE, SYSTEM_CITED
 from app.generation.rewriter import rewrite_query
+from app.observability.logging import get_logger, log_event
 from app.observability.metrics import RAG_QUALITY, STAGE_LATENCY
 from app.retrieval.retriever import retrieve
 from app.retrieval.store import RetrievedChunk
+
+_log = get_logger("rag")
 
 REFUSAL_MSG = REFUSAL_PHRASE + "（知识库中未检索到相关内容）。"
 
@@ -85,4 +88,11 @@ def answer_query(
         RAG_QUALITY.labels(outcome="low_confidence").inc()
     elif ans.grounded:
         RAG_QUALITY.labels(outcome="grounded").inc()
+
+    log_event(
+        _log, "info", "rag_query",
+        refusal=ans.is_refusal, grounded=ans.grounded, low_confidence=ans.low_confidence,
+        faithfulness=ans.faithfulness, n_sources=len(ans.sources),
+        invalid_citations=len(ans.invalid_citations), rewritten=(ans.rewritten_query != query),
+    )
     return ans

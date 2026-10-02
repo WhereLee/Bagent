@@ -4,7 +4,10 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.config import get_settings
+from app.observability.logging import get_logger, log_event
 from app.observability.metrics import LLM_TOKENS, STAGE_LATENCY
+
+_log = get_logger("llm")
 
 
 class LLMClient:
@@ -34,6 +37,8 @@ class LLMClient:
         if usage:
             LLM_TOKENS.labels(type="input").inc(usage.prompt_tokens or 0)
             LLM_TOKENS.labels(type="output").inc(usage.completion_tokens or 0)
+            log_event(_log, "debug", "llm_call", model=self.model,
+                      in_tokens=usage.prompt_tokens, out_tokens=usage.completion_tokens)
         return resp.choices[0].message.content or ""
 
     def generate(self, system: str, user: str, temperature: float = 0.1) -> str:

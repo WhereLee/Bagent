@@ -27,6 +27,7 @@ from app.config import ROOT_DIR, get_settings  # noqa: E402
 from app.db.session import get_session, init_schema  # noqa: E402
 from app.ingestion.chunking import chunk_parent_child  # noqa: E402
 from app.ingestion.embedder import get_embedder  # noqa: E402
+from app.observability.logging import configure_logging  # noqa: E402
 
 SEED = 42
 _CACHE = ROOT_DIR / "data" / "benchmark" / "_du_cache.json"
@@ -64,6 +65,7 @@ def _load_raw(n_passages: int) -> tuple[dict, dict, dict]:
 
 
 def build(queries: int, passages_n: int) -> None:
+    configure_logging(get_settings().log_level)
     init_schema()
     passages, q_txt, qrels = _load_raw(passages_n)
 

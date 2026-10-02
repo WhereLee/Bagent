@@ -15,6 +15,7 @@ from app.config import ROOT_DIR, get_settings  # noqa: E402
 from app.db.session import get_session  # noqa: E402
 from app.evaluation.dataset import label_relevance, load_golden  # noqa: E402
 from app.evaluation.metrics import evaluate  # noqa: E402
+from app.observability.logging import configure_logging  # noqa: E402
 from app.retrieval.retriever import retrieve  # noqa: E402
 
 CONFIGS = [
@@ -26,6 +27,7 @@ CONFIGS = [
 
 
 def run(k: int) -> None:
+    configure_logging(get_settings().log_level)
     s = get_settings()
     golden = label_relevance(get_session(), load_golden(ROOT_DIR / "data" / "golden" / "golden.jsonl"))
     if not golden:
