@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     rewrite_enabled: bool = True         # 多轮查询改写
     faithfulness_enabled: bool = True    # 生成后做忠实度校验
 
+    # --- Self-RAG / 知识冲突 (M8) ---
+    self_rag_enabled: bool = False       # 默认关（不静默改变现有行为/成本）
+    self_rag_max_iters: int = 2          # 最大重检轮数（防死循环）
+    conflict_check_enabled: bool = True  # 随 self_rag 启用
+
     # --- App ---
     app_host: str = "127.0.0.1"
     app_port: int = 8000

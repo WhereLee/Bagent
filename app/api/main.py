@@ -49,12 +49,14 @@ class DeleteReq(BaseModel):
 class QueryReq(BaseModel):
     query: str
     top_k: int | None = None
+    self_rag: bool | None = None   # 覆盖默认：是否启用 self-RAG/冲突检测
 
 
 class ChatReq(BaseModel):
     query: str
     history: list[dict] = []  # [{"role":"user"|"assistant","content":str}]
     top_k: int | None = None
+    self_rag: bool | None = None
 
 
 class SearchReq(BaseModel):
@@ -125,12 +127,12 @@ def delete_doc(req: DeleteReq) -> dict:
 
 @app.post("/query")
 def query(req: QueryReq) -> dict:
-    answer = answer_query(req.query, top_k=req.top_k)
+    answer = answer_query(req.query, top_k=req.top_k, self_rag=req.self_rag)
     return asdict(answer)
 
 
 @app.post("/chat")
 def chat(req: ChatReq) -> dict:
     """多轮问答：带上历史，服务端做查询改写后检索生成。"""
-    answer = answer_query(req.query, top_k=req.top_k, history=req.history)
+    answer = answer_query(req.query, top_k=req.top_k, history=req.history, self_rag=req.self_rag)
     return asdict(answer)

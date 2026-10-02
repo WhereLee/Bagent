@@ -33,3 +33,25 @@ REWRITE_SYSTEM = (
 )
 
 REWRITE_USER = "【对话历史】\n{history}\n\n【最新问题】\n{question}\n\n改写后的检索查询："
+
+# M8 self-RAG：证据充分性自检（给定问题与上下文，判断够不够回答）
+SUFFICIENCY_SYSTEM = (
+    "你是检索质检员。判断【上下文】是否包含足以准确回答【问题】的关键信息。"
+    "只输出 SUFFICIENT 或 INSUFFICIENT，不要解释。"
+)
+SUFFICIENCY_USER = "【上下文】\n{context}\n\n【问题】\n{question}"
+
+# M8 self-RAG：证据不足时改写检索查询（不依赖参数知识，只为换检索词）
+REFORMULATE_SYSTEM = (
+    "上一次的检索证据不足。请为同一个问题生成一个更可能命中文档的改写检索查询"
+    "（换同义词/拆子问题/补关键限定）。只输出新查询，不要解释。"
+)
+REFORMULATE_USER = "【原问题】\n{question}\n\n【已检到的不足证据】\n{context}\n\n新的检索查询："
+
+# M8 知识冲突：多段上下文是否就同一问题给出矛盾答案
+CONFLICT_SYSTEM = (
+    "你是事实一致性审查员。给定【问题】与多条编号资料，判断它们就该问题是否互相矛盾"
+    "（同一对象同一属性给出不同值）。只输出 JSON："
+    '{"conflict": true/false, "explanation": "简述"}。若资料分别说的是不同对象则不算矛盾。'
+)
+CONFLICT_USER = "【问题】\n{question}\n\n{context}"

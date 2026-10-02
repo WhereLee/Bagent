@@ -85,6 +85,7 @@ tests/  docs/  models/
 - **M5 ✅**：评估可信度与工程补齐 —— ✅接入标准基准 C-MTEB/DuRetrieval(真 qrels、文档级)、✅修 #3 增量正确性 bug、✅#2 candidate 扫参、✅#1 chunk 尺寸扫参、✅生成侧接 RGB（拒答/噪声鲁棒）。
 - **M6 ✅**：生产化 —— 多 LLM provider(DeepSeek 主/MiMo 备)+超时/重试退避/降级、检索结果缓存+自适应早退、API-Key 鉴权、prompt 注入防护。
 - **M7 ✅**：测试与评估纵深 —— CI 新增 **integration job**（真 pgvector 服务容器跑端到端检索/增量回归）、注入对抗测试集、bootstrap 置信区间、RGB 反事实/信息整合子集。
+- **M8 ✅**：Self-RAG 与知识冲突 —— 证据充分性自检 + 不足时改写重检(带上限) + 多源矛盾检测与降级；为接入联网多源预留中枢。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
@@ -134,6 +135,14 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 - **注入对抗测试**：`tests/test_injection_adversarial.py` 用一批真实 payload 验证“防护真拦得住”（含发现并补全了 `new instructions:` 漏网模式）。
 - **bootstrap 置信区间**：`app/evaluation/stats.py` + `eval_benchmark` 输出“均值±95%CI”，不再报单点。实测 dense recall@10 0.859±0.099 vs hybrid 0.889±0.065。
 - **RGB 子集**：`eval_rgb.py` 扩展 counterfactual/integration。**诚实发现**：反事实集上“只信上下文”的严格 grounding 会被**错误文档 100% 带偏**（复述谬误）——纯 RAG 的固有软肋，也是为何需要自检式/多源佐证检索（③）。
+
+## Self-RAG 与知识冲突（M8）
+
+config 默认关（不静默改行为/加成本），`/query` 传 `self_rag:true` 或设 `SELF_RAG_ENABLED=true` 启用：
+- **反思重检**（`app/retrieval/selfrag.py`）：检索→LLM 判证据充分性→不足则改写 query 重检，**最多 N 轮**（防死循环）。
+- **知识冲突**（`app/generation/conflict.py`）：多条上下文就同一对象同一属性给出不同值→**不偷选一个**，标 `conflict`+降置信+前缀提示。
+- 端到端验证（`scripts/demo_selfrag.py`）：两份对 XG-777 端口矛盾(8443 vs 9000)→系统检出冲突并正确区分“[3][4][5] 是 XG-200 不同对象不算矛盾”。
+- **诚实边界**：纯 KB 下 self-RAG 能治“证据不足硬答”与“KB 内部矛盾”，但“整份权威上下文都错”的 counterfactual 需接入第二个可信源（联网）才能彻底解——这套中枢就是为它预留。
 
 ## 多 provider 与生产韧性（M6）
 
