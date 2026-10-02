@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     rerank_enabled: bool = True
     reranker_model_name: str = "BAAI/bge-reranker-base"
 
+    # --- Generation / Evidence chain (M3) ---
+    force_citation: bool = True          # 是否强制引用（消融对照）
+    faithfulness_threshold: float = 0.6  # 低于此值标记为低置信
+    rewrite_enabled: bool = True         # 多轮查询改写
+    faithfulness_enabled: bool = True    # 生成后做忠实度校验
+
     # --- App ---
     app_host: str = "127.0.0.1"
     app_port: int = 8000

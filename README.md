@@ -80,7 +80,7 @@ tests/  docs/  models/
 
 - **M1 ✅**：端到端闭环 —— 解析→切块→向量→pgvector→MiMo 生成，含引用与拒答、FastAPI、CLI。
 - **M2 ✅**：检索质量 —— 混合检索(BM25+jieba / 稠密 / RRF) + Cross-Encoder rerank + 父子块(small-to-big)；golden set + recall@k/MRR/nDCG 消融。
-- **M3**：生成质量+证据链 —— faithfulness/幻觉率评估、引用溯源与拒答收紧、多轮 query 改写、生成侧消融。
+- **M3 ✅**：生成质量+证据链 —— faithfulness/幻觉率(LLM-as-judge)、引用校验与拒答收紧、多轮 query 改写、生成侧消融(含负向对照)。
 - **M4**：上线运维 —— 可观测(trace)、限流、压测、Docker 部署、CI 增强。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
@@ -95,3 +95,17 @@ tests/  docs/  models/
 
 结论：**hybrid 显著提升 recall@3（+0.18）**，**rerank 显著提升排序质量（MRR/nDCG）**；
 rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——该取舍在 M3 调候选池/阈值。
+
+## 生成质量验证（消融，本地复现：`scripts/eval_generation.py`）
+
+4 道可答题 + 5 道不可答题；faithfulness 用 LLM-as-judge 逐句蕴含判定；
+**no-RAG 为负向对照**（去掉检索证据、只凭模型知识回答）：
+
+| 配置 | 平均忠实度 | 幻觉率 | 拒答准确率 | 低置信(答了但存疑) |
+|---|---|---|---|---|
+| base(不强制引用) | 1.000 | 0.000 | 1.000 | 0 |
+| cited(强制引用) | 1.000 | 0.000 | 1.000 | 0 |
+| **no-RAG(无证据)** | **0.000** | **1.000** | **0.444** | 9 |
+
+结论：负向对照证明 faithfulness 确实能**抓到幻觉**（去证据后塌到 0）；带证据链则满忠实、
+且不可答题正确拒答。base/cited 本语料上未拉开差距（语料干净、模型守规矩），不粉饰。

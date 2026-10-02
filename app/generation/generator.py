@@ -1,50 +1,79 @@
-"""RAG 查询 pipeline：检索 -> 组装上下文 -> MiMo 生成（带引用与拒答）。"""
+"""RAG 查询 pipeline（M3）：改写 -> 检索 -> 生成 -> 引用校验 -> 忠实度/置信标记。"""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.config import get_settings
+from app.generation.citation import split_valid_invalid, strip_invalid_citations
+from app.generation.faithfulness import REFUSAL_PHRASE, assess_faithfulness
 from app.generation.llm import get_llm
+from app.generation.prompts import SYSTEM_BASE, SYSTEM_CITED
+from app.generation.rewriter import rewrite_query
 from app.retrieval.retriever import retrieve
 from app.retrieval.store import RetrievedChunk
 
-SYSTEM_PROMPT = (
-    "你是一个严谨的知识库问答助手。只能依据【参考资料】回答。"
-    "规则：\n"
-    "1) 若参考资料不足以回答，明确回复『根据现有资料无法回答』，不要编造。\n"
-    "2) 引用资料时在句末标注来源编号，如 [1][2]。\n"
-    "3) 回答要简洁、准确，使用与用户相同的语言。"
-)
+REFUSAL_MSG = REFUSAL_PHRASE + "（知识库中未检索到相关内容）。"
 
 
 @dataclass
 class Answer:
     query: str
     text: str
-    sources: list[dict]  # {id, source, score}
+    sources: list[dict]
+    rewritten_query: str | None = None
+    faithfulness: float | None = None
+    hallucination_rate: float | None = None
+    grounded: bool = False
+    is_refusal: bool = False
+    low_confidence: bool = False
+    invalid_citations: list[int] = field(default_factory=list)
 
 
 def _build_context(chunks: list[RetrievedChunk]) -> str:
-    blocks = []
-    for i, c in enumerate(chunks, start=1):
-        # 喂给 LLM 的是 context（命中子块时通常为父块，保留完整上下文）
-        blocks.append(f"[{i}] (来源: {c.source})\n{c.context}")
+    blocks = [f"[{i}] (来源: {c.source})\n{c.context}" for i, c in enumerate(chunks, start=1)]
     return "\n\n---\n\n".join(blocks)
 
 
-def answer_query(query: str, top_k: int | None = None) -> Answer:
-    chunks = retrieve(query, top_k=top_k)
+def answer_query(
+    query: str,
+    top_k: int | None = None,
+    history: list[dict] | None = None,
+    force_citation: bool | None = None,
+    check_faithfulness: bool | None = None,
+) -> Answer:
+    s = get_settings()
+    force_citation = s.force_citation if force_citation is None else force_citation
+    check_faith = s.faithfulness_enabled if check_faithfulness is None else check_faithfulness
 
-    # 无召回：直接拒答，不消耗 LLM
+    # 1) 多轮改写（有历史才做）
+    rewritten = rewrite_query(query, history or [], get_llm()) if (history and s.rewrite_enabled) else query
+
+    # 2) 检索
+    chunks = retrieve(rewritten, top_k=top_k)
     if not chunks:
-        return Answer(query=query, text="根据现有资料无法回答（知识库中未检索到相关内容）。", sources=[])
+        return Answer(query=query, rewritten_query=rewritten, text=REFUSAL_MSG,
+                      sources=[], is_refusal=True)
 
+    # 3) 生成（可选强制引用；citation 编号与检索列表 1:1）
     context = _build_context(chunks)
-    user_prompt = f"【参考资料】\n{context}\n\n【问题】\n{query}"
-    text = get_llm().complete(system=SYSTEM_PROMPT, user=user_prompt)
+    system = SYSTEM_CITED if force_citation else SYSTEM_BASE
+    text = get_llm().complete(system=system, user=f"【参考资料】\n{context}\n\n【问题】\n{rewritten}")
 
-    sources = [
-        {"id": c.chunk_id, "source": c.source, "score": round(c.score, 4)}
-        for c in chunks
-    ]
-    return Answer(query=query, text=text, sources=sources)
+    # 4) 引用校验：剔除越界引用
+    num = len(chunks)
+    _, invalid = split_valid_invalid(text, num)
+    text = strip_invalid_citations(text, num)
+
+    # 5) 忠实度 / 幻觉率
+    ans = Answer(query=query, rewritten_query=rewritten, text=text,
+                 sources=[{"id": c.chunk_id, "source": c.source, "score": round(c.score, 4)} for c in chunks],
+                 invalid_citations=invalid)
+    if check_faith:
+        report = assess_faithfulness(context, text, get_llm(), threshold=s.faithfulness_threshold)
+        ans.faithfulness = report["faithfulness"]
+        ans.hallucination_rate = report.get("hallucination_rate")
+        ans.grounded = report["grounded"]
+        ans.is_refusal = report["is_refusal"]
+        # 有内容但忠实度过低 -> 低置信（不假装确定）
+        ans.low_confidence = (not report["is_refusal"]) and (not report["grounded"])
+    return ans

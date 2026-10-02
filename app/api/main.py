@@ -32,6 +32,12 @@ class QueryReq(BaseModel):
     top_k: int | None = None
 
 
+class ChatReq(BaseModel):
+    query: str
+    history: list[dict] = []  # [{"role":"user"|"assistant","content":str}]
+    top_k: int | None = None
+
+
 class SearchReq(BaseModel):
     query: str
     top_k: int = 5
@@ -72,4 +78,11 @@ def search(req: SearchReq) -> dict:
 @app.post("/query")
 def query(req: QueryReq) -> dict:
     answer = answer_query(req.query, top_k=req.top_k)
+    return asdict(answer)
+
+
+@app.post("/chat")
+def chat(req: ChatReq) -> dict:
+    """多轮问答：带上历史，服务端做查询改写后检索生成。"""
+    answer = answer_query(req.query, top_k=req.top_k, history=req.history)
     return asdict(answer)

@@ -42,6 +42,11 @@ def cmd_query(text: str, top_k: int | None) -> None:
     ans = answer_query(text, top_k=top_k)
     print("\n=== 回答 ===")
     print(ans.text)
+    print(
+        f"\n=== 证据链 === faithfulness={ans.faithfulness} "
+        f"幻觉率={ans.hallucination_rate} grounded={ans.grounded} "
+        f"低置信={ans.low_confidence} 拒答={ans.is_refusal}"
+    )
     print("\n=== 来源 ===")
     for s in ans.sources:
         print(f"  [{s['id']}] score={s['score']} {s['source']}")
