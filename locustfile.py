@@ -36,7 +36,9 @@ class RagUser(HttpUser):
 
     @task(1)
     def query(self) -> None:
-        # LLM 生成较慢，放宽单请求超时以免误判失败
+        # /query 走 MiMo（LLM 绑定、有成本、延迟不代表本系统算力）；默认关闭，仅测检索层吞吐
+        if os.environ.get("LOCUST_INCLUDE_QUERY") != "1":
+            return
         self.client.post("/query", json={"query": self.q}, name="/query", timeout=60)
 
     @task(2)

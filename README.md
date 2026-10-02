@@ -130,18 +130,25 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 不靠自造小语料自证——接入 **C-MTEB/DuRetrieval**（中文通用网页段落检索，带真 qrels），
 在**独立 bench 库**上评估，**文档级相关性**（与切块尺寸解耦），固定 seed + 本地缓存可复现。
 
-`scripts/prepare_dataset.py` 采样(1200 段落/80 查询)入库 → `scripts/eval_benchmark.py` 出数（K=10，40 查询）：
+`scripts/prepare_dataset.py` 采样入库（`--passages`/`--queries` 可调，默认 1200/80）→ `scripts/eval_benchmark.py` 出数（doc-level K=10）。
+
+**小池（1200 段/40 查询）**——recall 偏高（池小→干扰少）：
 
 | 配置 | recall@10 | mrr | ndcg@10 |
 |---|---|---|---|
 | dense | 0.963 | 0.946 | 0.941 |
 | hybrid | 0.976 | 0.942 | 0.933 |
 | hybrid+rerank c20 | 0.988 | **0.988** | **0.986** |
-| hybrid+rerank c50 | **1.000** | 0.971 | 0.978 |
 
-关键结论（#2）：**candidate_n 是真实的 recall↔精度旋钮**——c50 召回拉满(1.0)但排序不如 c20，c20 排序最优；
-诚实发现：hybrid 单独用在此数据上 MRR/nDCG 反而微降（RRF 把本来被 dense 排很高的 gold 挤动），
-证明“混合需与 rerank 配合”、而非无条件变好。
+**放大池（4000 段/11569 子块/80 查询）**——recall 回落到真实水平，且 rerank 增益更健康：
+
+| 配置 | recall@10 | mrr | ndcg@10 |
+|---|---|---|---|
+| dense | 0.893 | 0.927 | 0.905 |
+| hybrid | 0.902 | 0.936 | 0.899 |
+| hybrid+rerank c20 | **0.915** | **0.968** | **0.929** |
+
+诚实发现：小池→大池，dense recall@10 从 0.963 降到 0.893，印证“池小会虚高 recall”；大池上 rerank 仍是主要驱动（recall +0.022、mrr +0.041、ndcg +0.024），hybrid 单独用在小数据上 MRR/nDCG 反而微降——“混合需与 rerank 配合”而非无条件变好。
 
 `scripts/chunk_sweep.py` 输出 #1 的 chunk 尺寸消融（真 gold、文档级）。
 
@@ -174,3 +181,17 @@ join documents 过滤 `is_deleted`；新增按 `source` 的 upsert（内容变�
 
 结论：M3 的“收紧引用+拒答”提示在**公认基准 RGB** 上把负例拒答率从 0.750 提到 **0.833（+8.3pp）**，
 噪声下仍有 0.92 faithfulness。诚实标注：拒答 83% 非 100%（仍有误答，阈值可再调），n=12 偏小。
+
+## 性能压测（Locust，单 worker / CPU / 无 GPU）
+
+`locust -f locustfile.py --headless -u 10 -r 5 -t 40s --host http://127.0.0.1:8000`（`/search` 走完整 retrieve 链，`/query` 默认关）：
+
+| /search 配置 | Avg | p99 | 吞吐 | 失败 |
+|---|---|---|---|---|
+| hybrid+rerank candidate_n=20 | 26.1s | ~30s | 0.29 req/s | 0 |
+| hybrid+rerank candidate_n=5 | 4.2s | 5.8s | **1.58 req/s** | 0 |
+| /health | 16ms | — | — | 0 |
+
+**瓶颈定位（靠 /metrics 阶段计时）**：retrieval 阶段 25.6s 里 **rerank 占 25.5s**，embedding+pgvector 仅 ~0.1s
+——CPU 上的 Cross-Encoder rerank 是吞吐天花板，比其余环节慢 ~180×。`candidate_n` 同时是**质量旋钮与延迟旋钮**（降到5 → 吞吐×5、p99 30s→5.8s）。
+**生产优化方向**：rerank 移到独立批量推理服务(TEI/Triton/GPU)、多 worker 水平扩（需处理 BM25 内存副本与 Prometheus 多进程）、或自适应 candidate_n。（本环境无 GPU 是根本约束。）

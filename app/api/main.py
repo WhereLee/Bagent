@@ -12,12 +12,12 @@ from app.db.session import get_engine, init_schema
 from app.generation.generator import answer_query
 from app.ingestion.indexer import ingest_file
 from app.db.session import get_session
-from app.ingestion.embedder import get_embedder
 from app.observability.logging import configure_logging
 from app.observability.metrics import render_metrics
 from app.observability.middleware import ObservabilityMiddleware
 from app.ratelimit import RateLimiter
-from app.retrieval.store import delete_document, vector_search
+from app.retrieval.retriever import retrieve
+from app.retrieval.store import delete_document
 
 app = FastAPI(title="Bagent RAG", version="0.1.0")
 
@@ -85,13 +85,8 @@ def ingest(req: IngestReq) -> dict:
 
 @app.post("/search")
 def search(req: SearchReq) -> dict:
-    embedder = get_embedder()
-    qvec = embedder.encode_query(req.query)
-    session = get_session()
-    try:
-        hits = vector_search(session, qvec, top_k=req.top_k)
-    finally:
-        session.close()
+    """检索预览：走与 /query 相同的 retrieve()（hybrid+RRF+rerank+父扩展），保证口径一致。"""
+    hits = retrieve(req.query, top_k=req.top_k)
     return {
         "query": req.query,
         "hits": [asdict(h) for h in hits],

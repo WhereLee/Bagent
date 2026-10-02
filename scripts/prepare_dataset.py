@@ -64,9 +64,18 @@ def _load_raw(n_passages: int) -> tuple[dict, dict, dict]:
     return passages, q_txt, qrels
 
 
-def build(queries: int, passages_n: int) -> None:
+def build(queries: int, passages_n: int, fresh: bool = False) -> None:
     configure_logging(get_settings().log_level)
     init_schema()
+    if fresh:
+        s0 = get_session()
+        try:
+            from sqlalchemy import text as _text
+            s0.execute(_text("DELETE FROM chunks"))
+            s0.execute(_text("DELETE FROM documents"))
+            s0.commit()
+        finally:
+            s0.close()
     passages, q_txt, qrels = _load_raw(passages_n)
 
     rng = random.Random(SEED)
@@ -147,5 +156,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--queries", type=int, default=80)
     ap.add_argument("--passages", type=int, default=1200)
+    ap.add_argument("--fresh", action="store_true", help="先清空 bench 库再重建")
     a = ap.parse_args()
-    build(a.queries, a.passages)
+    build(a.queries, a.passages, a.fresh)

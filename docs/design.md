@@ -122,3 +122,10 @@ M2/M3 会用 **golden set 上的 recall@k 消融实验**比较不同 chunk_size/
 **生成侧基准 RGB**：RGB 自带 positive/negative 文档，评测不经我们的库检索，直接构造上下文测生成侧：
 噪声鲁棒（cited 答案命中 0.917 / faithfulness 0.921）与负例拒答（强制引用 0.833 vs 基础提示 0.750）。
 意义：把 M3 “收紧引用+拒答提示”的收益放到公认基准上量化（+8.3pp 拒答），而不是自造集自证。
+
+## 12. 压测实测与 /search 口径修正
+
+- 压测发现 **/search 端点当时仍走 M1 的纯 dense vector_search**，与 /query 的 hybrid+rerank 口径不一致 → 已改为一律走 retrieve()，保证压测/预览测的是真实检索链。
+- Locust 实测(单worker/CPU/无GPU)：/search 带 rerank、10 并发下 avg ~26s、吞吐 0.3 req/s；/metrics 阶段计时归因 = **rerank 占 25.5/25.6s**，embedding+pgvector 仅 ~0.1s → **CPU 上 Cross-Encoder rerank 是吞吐天花板**。
+- candidate_n 20→5：吞吐 0.3→1.58 req/s、p99 30s→5.8s —— candidate_n 是质量(#2)与延迟的双重旋钮。
+- 缓解方向(未做，记录)：rerank 独立批量推理服务/GPU、多 worker(需解 BM25 内存副本 + Prometheus 多进程)。
