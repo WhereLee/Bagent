@@ -43,3 +43,10 @@ SEARXNG_ENGINES=baidu
 ## 什么时候换托管百度 API
 需要稳定 SLA、不想跟反爬搏斗、或量大了 → 实现一个 `baidu_api` 的 `SearchProvider`（同接口），
 在 `app/search/factory.py` 注册即可切换，业务层不动。
+
+## 云服务器实测结论（2026-10-03，腾讯云）
+- **docker 镜像能拉**：该机配了腾讯 registry mirror（`mirror.ccs.tencentyun.com`），`searxng/searxng`、`valkey` 秒级拉到。
+- **一键起**：`bash deploy_run.sh`（自动填 secret_key、启 redis+searxng、绑 127.0.0.1:8080、冒烟）。
+- **引擎实测**：“秦惠文王”查询：`sogou` ✅、`360search` ✅出真实结果；**`baidu` ❌ `Suspended: CAPTCHA`**（机房 IP 被反爬）。
+  → 默认引擎已改 `sogou,360search`。验证命令见 `probe.sh`。
+- **结论**：“自架 SearXNG+百度”里的百度不可靠；但 **SearXNG+sogou/360 这条联网链在云上跑通了**。要真正的百度，走托管 API（方案 B）。

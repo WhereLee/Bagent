@@ -17,11 +17,11 @@ search:
   default_lang: "zh-CN"
 
 engines:
+  # ⚠实测：国内机房 IP 下 baidu 弹 CAPTCHA（Suspended），默认不用；sogou/360search 可用。
   - name: baidu
     engine: baidu
     shortcut: bd
-    disabled: false
-    enable_http: false        # 强制 https
+    disabled: true
   - name: 360search
     engine: 360search
     disabled: false

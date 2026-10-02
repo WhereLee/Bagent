@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     web_search_enabled: bool = False   # 默认关（不影响现有离线链路/测试）
     search_provider: str = "mock"      # mock | searxng
     searxng_base_url: str = "http://127.0.0.1:8080"
-    searxng_engines: str = "baidu"     # 逗号分隔，默认只百度
+    searxng_engines: str = "sogou,360search"  # 逗号分隔；国内机房 IP 下 baidu 常弹 CAPTCHA
     search_timeout: float = 8.0
     search_user_agent: str = "BagentRAG/0.1"
     web_search_max_results: int = 5
