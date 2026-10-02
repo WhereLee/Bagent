@@ -21,10 +21,13 @@ def rewrite_query(question: str, history: list[dict], llm) -> str:
     """有历史才改写；无历史直接返回原问题（省一次 LLM 调用）。"""
     if not history:
         return question
-    out = llm.complete(
-        system=REWRITE_SYSTEM,
-        user=REWRITE_USER.format(history=format_history(history), question=question),
-    )
+    try:
+        out = llm.complete(
+            system=REWRITE_SYSTEM,
+            user=REWRITE_USER.format(history=format_history(history), question=question),
+        )
+    except Exception:  # noqa: BLE001  provider 不可用时不改写，回退原问题
+        return question
     rewritten = (out or "").strip()
-    # 防御：模型输出为空或过长离谱时回退原问题
+    # 防御：模型输出为空时回退原问题
     return rewritten if rewritten else question

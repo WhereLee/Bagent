@@ -16,6 +16,7 @@ from app.observability.metrics import (
     RATE_LIMIT_REJECTED,
 )
 from app.ratelimit import RateLimiter
+from app.security import constant_time_equal
 
 log = get_logger("http")
 
@@ -31,9 +32,10 @@ def client_ip(request: Request) -> str:
 
 
 class ObservabilityMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, limiter: RateLimiter) -> None:
+    def __init__(self, app, limiter: RateLimiter, api_key: str | None = None) -> None:
         super().__init__(app)
         self.limiter = limiter
+        self.api_key = api_key
 
     async def dispatch(self, request: Request, call_next):
         rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
@@ -41,6 +43,14 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
         method = request.method
+
+        # 鉴权：配置了 API Key 则非豁免端点必须携带匹配的 X-API-Key
+        if self.api_key and path not in EXEMPT_PATHS:
+            given = request.headers.get("x-api-key", "")
+            if not constant_time_equal(given, self.api_key):
+                resp = JSONResponse({"error": "unauthorized"}, status_code=401)
+                resp.headers["X-Request-ID"] = rid
+                return resp
 
         if self.limiter is not None and path not in EXEMPT_PATHS:
             allowed, retry_after = self.limiter.allow(client_ip(request))

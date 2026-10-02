@@ -10,6 +10,7 @@ from starlette.responses import Response
 from app.config import get_settings
 from app.db.session import get_engine, init_schema
 from app.generation.generator import answer_query
+from app.generation.llm import get_llm
 from app.ingestion.indexer import ingest_file
 from app.db.session import get_session
 from app.observability.logging import configure_logging
@@ -17,6 +18,7 @@ from app.observability.metrics import render_metrics
 from app.observability.middleware import ObservabilityMiddleware
 from app.ratelimit import RateLimiter
 from app.retrieval.retriever import retrieve
+from app.retrieval.cache import get_retrieval_cache
 from app.retrieval.store import delete_document
 
 app = FastAPI(title="Bagent RAG", version="0.1.0")
@@ -26,7 +28,7 @@ if _s.rate_limit_enabled:
     _limiter: RateLimiter | None = RateLimiter(_s.rate_limit_per_sec, _s.rate_limit_burst)
 else:
     _limiter = None
-app.add_middleware(ObservabilityMiddleware, limiter=_limiter)
+app.add_middleware(ObservabilityMiddleware, limiter=_limiter, api_key=(_s.api_key or None))
 
 
 @app.on_event("startup")
@@ -63,7 +65,19 @@ class SearchReq(BaseModel):
 @app.get("/health")
 def health() -> dict:
     s = get_settings()
-    return {"status": "ok", "model": s.mimo_model, "embedding": s.embedding_model_name}
+    info = {
+        "status": "ok",
+        "llm_provider": s.llm_primary_provider,
+        "llm_fallback": s.llm_fallback_provider or None,
+        "embedding": s.embedding_model_name,
+        "retrieval_mode": s.retrieval_mode,
+        "auth": bool(s.api_key),
+    }
+    try:
+        info["llm_model"] = get_llm().chain[0].model
+    except Exception:  # noqa: BLE001  provider 未配置时不影响健康检查
+        info["llm_model"] = None
+    return info
 
 
 @app.get("/metrics")
@@ -104,6 +118,8 @@ def delete_doc(req: DeleteReq) -> dict:
         raise
     finally:
         session.close()
+    if ok:
+        get_retrieval_cache().clear()
     return {"source": req.source, "deleted": ok}
 
 

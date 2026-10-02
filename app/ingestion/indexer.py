@@ -12,6 +12,7 @@ from app.ingestion.chunking import chunk_parent_child
 from app.ingestion.embedder import get_embedder
 from app.ingestion.parser import parse_file
 from app.observability.logging import get_logger, log_event
+from app.retrieval.cache import get_retrieval_cache
 from app.retrieval.store import index_document
 
 _log = get_logger("ingest")
@@ -59,6 +60,9 @@ def ingest_file(path: str | Path) -> IngestResult:
         raise
     finally:
         session.close()
+
+    if action in ("created", "updated"):
+        get_retrieval_cache().clear()  # 语料变更 -> 失效检索缓存
 
     return IngestResult(source, doc_id, n_children, len(parents), action)
 

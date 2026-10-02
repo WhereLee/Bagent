@@ -51,14 +51,26 @@ INPROGRESS = Gauge(
 # --- LLM 用量 ---
 LLM_TOKENS = Counter(
     "bagent_llm_tokens_total",
-    "MiMo 调用消耗 token",
+    "LLM 调用消耗 token",
     ["type"],  # input / output
 )
+
+# --- LLM 韧性 ---
+LLM_REQUESTS = Counter("bagent_llm_requests_total", "LLM 请求数", ["provider", "outcome"])
+LLM_RETRIES = Counter("bagent_llm_retries_total", "LLM 重试次数", ["provider"])
+LLM_FALLBACKS = Counter("bagent_llm_fallbacks_total", "LLM 降级到备 provider 次数")
 
 # --- 限流 ---
 RATE_LIMIT_REJECTED = Counter(
     "bagent_rate_limit_rejected_total",
     "被限流拒绝的请求数",
+)
+
+# --- 检索缓存 ---
+RETRIEVAL_CACHE = Counter(
+    "bagent_retrieval_cache_total",
+    "检索缓存命中情况",
+    ["result"],  # hit / miss
 )
 
 

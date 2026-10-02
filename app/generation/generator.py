@@ -6,13 +6,14 @@ from dataclasses import dataclass, field
 from app.config import get_settings
 from app.generation.citation import split_valid_invalid, strip_invalid_citations
 from app.generation.faithfulness import REFUSAL_PHRASE, assess_faithfulness
-from app.generation.llm import get_llm
+from app.generation.llm import LLMUnavailable, get_llm
 from app.generation.prompts import SYSTEM_BASE, SYSTEM_CITED
 from app.generation.rewriter import rewrite_query
 from app.observability.logging import get_logger, log_event
 from app.observability.metrics import RAG_QUALITY, STAGE_LATENCY
 from app.retrieval.retriever import retrieve
 from app.retrieval.store import RetrievedChunk
+from app.security import detect_injection, sanitize_query
 
 _log = get_logger("rag")
 
@@ -33,8 +34,11 @@ class Answer:
     invalid_citations: list[int] = field(default_factory=list)
 
 
-def _build_context(chunks: list[RetrievedChunk]) -> str:
-    blocks = [f"[{i}] (来源: {c.source})\n{c.context}" for i, c in enumerate(chunks, start=1)]
+def _build_context(chunks: list[RetrievedChunk], guard: bool = False) -> str:
+    blocks = []
+    for i, c in enumerate(chunks, start=1):
+        ctx = sanitize_query(c.context) if guard else c.context
+        blocks.append(f"[{i}] (来源: {c.source})\n{ctx}")
     return "\n\n---\n\n".join(blocks)
 
 
@@ -48,6 +52,10 @@ def answer_query(
     s = get_settings()
     force_citation = s.force_citation if force_citation is None else force_citation
     check_faith = s.faithfulness_enabled if check_faithfulness is None else check_faithfulness
+    guard = s.prompt_injection_guard
+    if guard and detect_injection(query):
+        log_event(_log, "warning", "injection_detected_in_query")
+        query = sanitize_query(query)
 
     # 1) 多轮改写（有历史才做）
     rewritten = rewrite_query(query, history or [], get_llm()) if (history and s.rewrite_enabled) else query
@@ -59,9 +67,16 @@ def answer_query(
                       sources=[], is_refusal=True)
 
     # 3) 生成（可选强制引用；citation 编号与检索列表 1:1）
-    context = _build_context(chunks)
+    context = _build_context(chunks, guard=guard)
     system = SYSTEM_CITED if force_citation else SYSTEM_BASE
-    text = get_llm().generate(system=system, user=f"【参考资料】\n{context}\n\n【问题】\n{rewritten}")
+    try:
+        text = get_llm().generate(system=system, user=f"【参考资料】\n{context}\n\n【问题】\n{rewritten}")
+    except LLMUnavailable:
+        # provider 全挂：优雅降级，不裸 500；仍返回已检索到的来源供参考
+        return Answer(query=query, rewritten_query=rewritten,
+                      text="服务暂时不可用（模型后端均不可用），请稍后重试。",
+                      sources=[{"id": c.chunk_id, "source": c.source, "score": round(c.score, 4)} for c in chunks],
+                      low_confidence=True)
 
     # 4) 引用校验：剔除越界引用
     num = len(chunks)

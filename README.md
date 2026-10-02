@@ -83,6 +83,7 @@ tests/  docs/  models/
 - **M3 ✅**：生成质量+证据链 —— faithfulness/幻觉率(LLM-as-judge)、引用校验与拒答收紧、多轮 query 改写、生成侧消融(含负向对照)。
 - **M4 ✅**：上线运维 —— 结构化 JSON 日志 + request_id、Prometheus 指标(/metrics)、令牌桶限流(429)、Locust 压测、Docker/compose 部署、CI 增强(secret-scan + docker-build)。
 - **M5 ✅**：评估可信度与工程补齐 —— ✅接入标准基准 C-MTEB/DuRetrieval(真 qrels、文档级)、✅修 #3 增量正确性 bug、✅#2 candidate 扫参、✅#1 chunk 尺寸扫参、✅生成侧接 RGB（拒答/噪声鲁棒）。
+- **M6 ✅**：生产化 —— 多 LLM provider(DeepSeek 主/MiMo 备)+超时/重试退避/降级、检索结果缓存+自适应早退、API-Key 鉴权、prompt 注入防护。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
@@ -124,6 +125,16 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 
 ### HTTP 端点
 `GET /health`、`GET /metrics`、`POST /ingest`、`POST /delete`、`POST /search`、`POST /query`、`POST /chat`（文档 `/docs`）。
+若设了 `API_KEY`，除 `/health`/`/metrics`/`/docs` 外均需请求头 `X-API-Key`（恒定时间比较）。
+
+## 多 provider 与生产韧性（M6）
+
+- **多 provider + 降级**：`LLM_PRIMARY_PROVIDER=deepseek`、`LLM_FALLBACK_PROVIDER=mimo`；主 provider 遇 429/超时/连接/5xx **指数退避重试**，仍失败则**降级到备用**；全挂则抛 `LLMUnavailable` → `/query` **优雅降级**（不裸 500，仍返回已检索来源）。
+- **检索缓存**：`retrieve()` 按 `(query,mode,rerank,candidate_n,top_k,parent)` 的 LRU+TTL 缓存，命中跳过 embed+rerank；写入/删除时主动失效（多进程需换 Redis，接口不变）。
+- **自适应早退**：`RERANK_SKIP_THRESHOLD` 配置后，dense 首分超阈时跳过 rerank 降延迟（默认关）。
+- **prompt 注入防护**：对用户输入与检索文档都做常见注入模式的检测/中和（纵深防御一层，非银弹）。
+- **压测（DeepSeek 主）**：`/query` 8 并发 23 次、**0 失败、avg 1.3s、p99 2.3s**——瓶颈已回到本地 rerank（provider 不再是短板）。
+- 指标：`bagent_llm_requests_total/retries/fallbacks`、`bagent_retrieval_cache_total{hit|miss}`、`bagent_rate_limit_rejected_total`。
 
 ## 标准基准评估（M5）
 

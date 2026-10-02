@@ -36,6 +36,18 @@ class Settings(BaseSettings):
     mimo_model: str = "mimo-v2.6-flash"
     mimo_thinking: str = "disabled"
 
+    # --- LLM: DeepSeek (OpenAI 兼容) ---
+    deepseek_base_url: str = "https://api.deepseek.com/v1"
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-flash"
+
+    # --- LLM provider 路由与韧性 ---
+    llm_primary_provider: str = "deepseek"    # deepseek | mimo
+    llm_fallback_provider: str = "mimo"        # 置空则不降级
+    llm_timeout: float = 15.0
+    llm_max_retries: int = 3                   # 每个 provider 的重试次数
+    llm_retry_base_delay: float = 0.5          # 指数退避基准秒
+
     # --- Embedding ---
     embedding_model_name: str = "BAAI/bge-small-zh-v1.5"
     embedding_model_path: str = "./models"
@@ -61,6 +73,8 @@ class Settings(BaseSettings):
     # --- Rerank (Cross-Encoder) ---
     rerank_enabled: bool = True
     reranker_model_name: str = "BAAI/bge-reranker-base"
+    # 自适应精排：dense top1 分数高过该阈值则跳过 rerank（降延迟）；None 关闭
+    rerank_skip_threshold: float | None = None
 
     # --- Generation / Evidence chain (M3) ---
     force_citation: bool = True          # 是否强制引用（消融对照）
@@ -77,6 +91,15 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_per_sec: float = 5.0   # 每 IP 每秒补充令牌数
     rate_limit_burst: int = 10        # 突发容量
+
+    # --- Retrieval cache (M6) ---
+    retrieval_cache_enabled: bool = True
+    retrieval_cache_max: int = 256
+    retrieval_cache_ttl: int = 300    # 秒；且写入/删除时主动失效
+
+    # --- Security (M6) ---
+    api_key: str = ""                 # 非空则启用 /query /search 等鉴权
+    prompt_injection_guard: bool = True
 
     @property
     def sqlalchemy_url(self) -> str:

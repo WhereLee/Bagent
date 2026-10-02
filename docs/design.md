@@ -129,3 +129,14 @@ M2/M3 会用 **golden set 上的 recall@k 消融实验**比较不同 chunk_size/
 - Locust 实测(单worker/CPU/无GPU)：/search 带 rerank、10 并发下 avg ~26s、吞吐 0.3 req/s；/metrics 阶段计时归因 = **rerank 占 25.5/25.6s**，embedding+pgvector 仅 ~0.1s → **CPU 上 Cross-Encoder rerank 是吞吐天花板**。
 - candidate_n 20→5：吞吐 0.3→1.58 req/s、p99 30s→5.8s —— candidate_n 是质量(#2)与延迟的双重旋钮。
 - 缓解方向(未做，记录)：rerank 独立批量推理服务/GPU、多 worker(需解 BM25 内存副本 + Prometheus 多进程)。
+
+## 13. M6：多 provider 韧性、缓存与安全
+
+**多 provider 路由与降级**：DeepSeek 主、MiMo 备（配置切换）。只对可重试错误(429/超时/连接/5xx)做指数退避重试；4xx 直接换 provider；全挂抛 LLMUnavailable，由 /query 优雅降级为"服务暂不可用"而非裸 500。指标 llm_requests/retries/fallbacks。
+理由：MiMo RPM=100 是压测暴露的现实约束；多 provider + 退避是生产必备的下游韧性，DeepSeek 并发更高。
+
+**检索缓存**：retrieve() 结果 LRU+TTL，key 含全部影响结果的参数；写入/删除显式 clear。瓶颈定位显示 CPU rerank 是天花板 → 缓存直接省掉热点查询的 embed+rerank。多进程下各自缓存 + TTL 兜底，分布式一致需 Redis（接口不变）。
+
+**自适应早退**：dense 首分超阈跳过 rerank（默认关，避免伤召回）。
+
+**安全**：API-Key 中间件（恒定时间比较，/health /metrics 豁免）；prompt 注入对输入与检索文档做检测/中和（纵深防御一层，明确不是银弹）；租户过滤以参数化 SQL/后过滤实现（metadata.tenant，入库写入）。
