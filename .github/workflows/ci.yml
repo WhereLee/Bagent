@@ -50,6 +50,7 @@ jobs:
       RETRIEVAL_MODE: hybrid
       RERANK_ENABLED: "false"          # 集成测只验 dense/hybrid(BM25+RRF) 路径，避免 1.1G reranker 拖慢 CI
       RETRIEVAL_CACHE_ENABLED: "false" # 关掉缓存保证每次都真跑检索
+      HF_ENDPOINT: https://huggingface.co  # runner 在海外，用官方 HF（非国内镜像）拉 embedding
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
