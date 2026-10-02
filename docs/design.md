@@ -151,3 +151,8 @@ M2/M3 会用 **golden set 上的 recall@k 消融实验**比较不同 chunk_size/
 - 纯解析(parse_sufficiency/parse_conflict_verdict)与 LLM 调用分离，进单测；LLM 判定属集成。config 默认关，不静默改行为/加成本。
 
 **架构定位**：这套是"多源 agentic 检索"的中枢；联网搜索作为**第二个证据源**接进来即可复用同一充分性/冲突/佐证机制——这也是为什么 self-RAG 先于联网做是对的（先建中枢，后接源）。纯 KB 下它治不了"整份上下文都错"的 counterfactual，需多源交叉。
+
+## 15. Reranker int8 量化（决策+实测）
+为把 rerank 留在 4G 服务器本地跑、又不被"1.1G 模型传输/CPU 吞吐"卡：Reranker 做成可插拔 fp32/int8（PyTorch 动态量化 quantize_dynamic，只量 Linear，稳、无 ONNX 依赖链）。
+本机实测：体积 1112→770MB(−31%)、打分 ×2.4 快。质量用 eval_rerank_ab.py 在 DuRetrieval A/B(cand=20,K=10,n=40)：recall@10 +0.000、MRR −0.012、nDCG −0.009，均在 95%CI 内 → int8 采纳。
+教训：toy 样本的排名一致性 ρ=0.875 是 n=3 假警报；量化掉不掉要在真实基准上测 Δ±CI 判，别信经验数。默认 RERANKER_INT8=false，生产按需开；换领域复测。

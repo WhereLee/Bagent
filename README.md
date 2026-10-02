@@ -101,6 +101,11 @@ tests/  docs/  models/
 结论：**hybrid 显著提升 recall@3（+0.18）**，**rerank 显著提升排序质量（MRR/nDCG）**；
 rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——该取舍在 M3 调候选池/阈值。
 
+**Reranker int8 动态量化**（`scripts/quantize_reranker.py` + `scripts/eval_rerank_ab.py`，本机实测）：
+体积 1112→770MB（−31%）、rerank **×2.4 快**；DuRetrieval A/B(cand=20,K=10,n=40)：recall@10 **+0.000**、
+MRR −0.012、nDCG −0.009（**均在 95%CI 内**）。结论：4G CPU 机上默认开 int8 净赚；换领域需复测。
+开关 `RERANKER_INT8=true`（Reranker 可插拔 fp32/int8）。
+
 ## 生成质量验证（消融，本地复现：`scripts/eval_generation.py`）
 
 4 道可答题 + 5 道不可答题；faithfulness 用 LLM-as-judge 逐句蕴含判定；

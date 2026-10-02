@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     reranker_model_name: str = "BAAI/bge-reranker-base"
     # 自适应精排：dense top1 分数高过该阈值则跳过 rerank（降延迟）；None 关闭
     rerank_skip_threshold: float | None = None
+    reranker_int8: bool = False      # int8 动态量化（需先过 A/B 精度实测）
+    rerank_threads: int = 0          # >0 时限制 torch 线程，防并发过订
 
     # --- Generation / Evidence chain (M3) ---
     force_citation: bool = True          # 是否强制引用（消融对照）
