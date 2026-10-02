@@ -4,10 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.config import get_settings
-from app.db.session import get_session
 from app.generation.llm import get_llm
-from app.ingestion.embedder import get_embedder
-from app.retrieval.store import RetrievedChunk, vector_search
+from app.retrieval.retriever import retrieve
+from app.retrieval.store import RetrievedChunk
 
 SYSTEM_PROMPT = (
     "你是一个严谨的知识库问答助手。只能依据【参考资料】回答。"
@@ -28,22 +27,13 @@ class Answer:
 def _build_context(chunks: list[RetrievedChunk]) -> str:
     blocks = []
     for i, c in enumerate(chunks, start=1):
-        blocks.append(f"[{i}] (来源: {c.source})\n{c.content}")
+        # 喂给 LLM 的是 context（命中子块时通常为父块，保留完整上下文）
+        blocks.append(f"[{i}] (来源: {c.source})\n{c.context}")
     return "\n\n---\n\n".join(blocks)
 
 
 def answer_query(query: str, top_k: int | None = None) -> Answer:
-    s = get_settings()
-    k = top_k or s.retrieval_top_k
-
-    embedder = get_embedder()
-    qvec = embedder.encode_query(query)
-
-    session = get_session()
-    try:
-        chunks = vector_search(session, qvec, top_k=k)
-    finally:
-        session.close()
+    chunks = retrieve(query, top_k=top_k)
 
     # 无召回：直接拒答，不消耗 LLM
     if not chunks:

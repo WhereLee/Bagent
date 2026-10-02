@@ -47,6 +47,20 @@ class Settings(BaseSettings):
     # --- Retrieval ---
     retrieval_top_k: int = 5
     retrieval_candidate_n: int = 20
+    # 检索模式：dense(纯向量) / hybrid(向量+BM25，RRF 融合)；hybrid 下再按需 rerank
+    retrieval_mode: str = "hybrid"
+    rrf_k: int = 60
+    # 父子块：命中子块后是否扩展为父块内容喂给 LLM
+    retrieve_parent: bool = True
+
+    # --- Chunking (parent-child / small-to-big) ---
+    chunk_parent_tokens: int = 600
+    chunk_child_tokens: int = 150
+    chunk_child_overlap: int = 30
+
+    # --- Rerank (Cross-Encoder) ---
+    rerank_enabled: bool = True
+    reranker_model_name: str = "BAAI/bge-reranker-base"
 
     # --- App ---
     app_host: str = "127.0.0.1"

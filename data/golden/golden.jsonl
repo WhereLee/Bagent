@@ -1,0 +1,14 @@
+{"question": "XG-200 的默认管理端口是多少？", "gold_source": "gateway_manual.md", "gold_snippets": ["默认登录端口为8443"]}
+{"question": "XG-400 Pro 的默认管理端口是多少？", "gold_source": "gateway_pro_manual.md", "gold_snippets": ["默认登录端口为9443"]}
+{"question": "SW-2400 交换机的 Web 登录端口是多少？", "gold_source": "switch_manual.md", "gold_snippets": ["Web登录端口为8080"]}
+{"question": "XG-200 整机质保几年？", "gold_source": "gateway_manual.md", "gold_snippets": ["整机质保3年"]}
+{"question": "XG-400 Pro 整机质保几年？", "gold_source": "gateway_pro_manual.md", "gold_snippets": ["整机质保5年"]}
+{"question": "SW-2400 的售后是上门还是返厂？", "gold_source": "switch_manual.md", "gold_snippets": ["返厂维修"]}
+{"question": "XG-200 当前最新固件版本号是多少？", "gold_source": "gateway_manual.md", "gold_snippets": ["最新固件版本为v3.2.1"]}
+{"question": "XG-400 Pro 当前最新固件版本号是多少？", "gold_source": "gateway_pro_manual.md", "gold_snippets": ["最新固件版本为v4.0.2"]}
+{"question": "XG-200 提供几个千兆以太网口？", "gold_source": "gateway_manual.md", "gold_snippets": ["4个千兆以太网口"]}
+{"question": "XG-400 Pro 提供几个千兆以太网口？", "gold_source": "gateway_pro_manual.md", "gold_snippets": ["8个千兆以太网口"]}
+{"question": "SW-2400 有多少个千兆电口？", "gold_source": "switch_manual.md", "gold_snippets": ["24个千兆电口"]}
+{"question": "XG-400 Pro 支持哪个 PoE 标准？", "gold_source": "gateway_pro_manual.md", "gold_snippets": ["802.3bt"]}
+{"question": "XG-400 Pro 的日志默认保留多久？", "gold_source": "gateway_pro_manual.md", "gold_snippets": ["日志默认保留180天"]}
+{"question": "XG-200 的日志默认保留多久？", "gold_source": "gateway_manual.md", "gold_snippets": ["日志默认保留90天"]}

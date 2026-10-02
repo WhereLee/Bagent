@@ -45,3 +45,22 @@ M2/M3 会用 **golden set 上的 recall@k 消融实验**比较不同 chunk_size/
 
 - Embedding 用 small 模型：牺牲部分召回上限，换取 CPU 可用与迭代速度；后续可平滑换 m3 并重建。
 - 表格/图片：M1 只做基础文本抽取，结构化解析（表格）在 M2 增强——**流程完整，深度渐进**。
+
+## 8. M2：混合检索与重排
+
+**词法腿（关键决策）**：面试默认的 BM25，在 Windows + PostgreSQL 18 上无法便捷安装 pg_search(Rust) 扩展。
+选型对比：pg_search(真 BM25、DB 原生、可移植性差) / pg_trgm(非 BM25、中文噪声) /
+**Python BM25 + jieba（采用）**。取舍在于：算法是真 BM25(k1/b/IDF)，但索引载体是进程内存；
+一致性用 generation 标记 (count, max_id) 触发重建。**规模化迁移路径：语料变大后切 pg_search/ES，
+对外接口 `search(query, top_k)` 不变。** 这是环境约束导致的技术选择，非"项目小用不上"式简化。
+
+**父子块(small-to-big)**：父块（~600 token）只存文本、embedding=NULL；子块（~150 token、带 overlap）
+存 embedding 供检索。检索命中子块，`expand_to_parents` 把喂给 LLM 的 context 扩为父块，
+在"匹配精度"与"上下文完整"间兼得。vector_search 以 `embedding IS NOT NULL` 天然只召回子块。
+
+**RRF**：用排名而非分数融合（规避稠密相似度与 BM25 量纲不可比），k=60。
+
+**Rerank**：`BAAI/bge-reranker-base`(Cross-Encoder)，粗召回 topN → 逐对联合打分 → topK。
+
+**消融发现（golden 14 条/3 篇可混淆手册）**：hybrid 显著提升 recall@3(+0.18)；rerank 提升 MRR/nDCG，
+但会把边缘相关块排出小 k 截断，轻微拉低 recall@k——该取舍在 M3 通过候选池大小/阈值调优，不回避。

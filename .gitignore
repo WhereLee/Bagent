@@ -15,10 +15,10 @@ env/
 models/*
 !models/.gitkeep
 
-# Data corpus (large / private); keep the small demo sample tracked
+# Data corpus (large / private); keep the small demo *.md samples tracked
 data/corpus/*
 !data/corpus/.gitkeep
-!data/corpus/gateway_manual.md
+!data/corpus/*.md
 
 # Logs / traces
 logs/

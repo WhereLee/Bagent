@@ -78,6 +78,20 @@ tests/  docs/  models/
 
 ## 里程碑
 
-- **M1（当前）**：端到端闭环 —— 解析→切块→向量→pgvector→MiMo 生成，含引用与拒答、FastAPI、CLI。
-- **M2**：检索质量 —— 混合检索 + RRF + Rerank + 父子块；建 golden set 与检索指标。
-- **M3**：证据链 —— 评估体系（Ragas/指标）+ 消融实验 + 多轮改写 + 可观测 + 压测 + Docker/CI。
+- **M1 ✅**：端到端闭环 —— 解析→切块→向量→pgvector→MiMo 生成，含引用与拒答、FastAPI、CLI。
+- **M2 ✅**：检索质量 —— 混合检索(BM25+jieba / 稠密 / RRF) + Cross-Encoder rerank + 父子块(small-to-big)；golden set + recall@k/MRR/nDCG 消融。
+- **M3**：生成质量+证据链 —— faithfulness/幻觉率评估、引用溯源与拒答收紧、多轮 query 改写、生成侧消融。
+- **M4**：上线运维 —— 可观测(trace)、限流、压测、Docker 部署、CI 增强。
+
+## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
+
+基于 `data/golden/golden.jsonl`（14 条覆盖 3 篇可混淆手册的标注）：
+
+| 配置 | recall@3 | mrr | ndcg@3 | recall@5 | ndcg@5 |
+|---|---|---|---|---|---|
+| dense | 0.679 | 0.631 | 0.613 | 1.000 | 0.752 |
+| hybrid | 0.857 | 0.631 | 0.692 | 1.000 | 0.748 |
+| hybrid+rerank | 0.786 | 0.714 | 0.732 | 0.929 | 0.793 |
+
+结论：**hybrid 显著提升 recall@3（+0.18）**，**rerank 显著提升排序质量（MRR/nDCG）**；
+rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——该取舍在 M3 调候选池/阈值。

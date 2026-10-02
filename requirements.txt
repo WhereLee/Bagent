@@ -13,6 +13,9 @@ httpx>=0.27,<0.28
 sentence-transformers>=3.3,<4
 # torch CPU wheel is installed explicitly in scripts/setup.ps1 to avoid pulling CUDA build
 
+# ---- Lexical retrieval (BM25 + Chinese tokenizer) ----
+jieba>=0.42,<0.43
+
 # ---- Vector DB (PostgreSQL + pgvector) ----
 sqlalchemy>=2.0,<2.1
 psycopg[binary]>=3.2,<4
