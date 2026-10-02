@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from pathlib import Path
 
-from app.config import get_settings
+from app.config import ROOT_DIR, get_settings
 
 
 class Reranker:
@@ -51,10 +52,54 @@ class Reranker:
 _reranker: Reranker | None = None
 
 
-def get_reranker() -> Reranker:
+class OnnxReranker:
+    """ONNX Runtime 后端的 reranker（用导出的 fp32 或 int8 .onnx）。与 Reranker 同接口。
+
+    int8 小文件（~279MB）= 磁盘/内存↓且 CPU 更快；只喂导出时声明的 input_ids/attention_mask。
+    """
+
+    def __init__(self, model_path: str | Path, tokenizer_name: str | None = None,
+                 max_length: int = 512) -> None:
+        os.environ.setdefault("HF_HOME", str(get_settings().models_dir))
+        import onnxruntime as ort
+        from transformers import AutoTokenizer
+
+        s = get_settings()
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name or s.reranker_model_name)
+        so = ort.SessionOptions()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        if s.rerank_threads and s.rerank_threads > 0:
+            so.intra_op_num_threads = int(s.rerank_threads)
+        self.sess = ort.InferenceSession(str(model_path), sess_options=so,
+                                         providers=["CPUExecutionProvider"])
+        self.input_names = {i.name for i in self.sess.get_inputs()}
+        self.max_length = max_length
+        self.quantized = True
+
+    def rerank(self, query: str, doc_texts: list[str]) -> list[float]:
+        if not doc_texts:
+            return []
+        enc = self.tokenizer([query] * len(doc_texts), doc_texts, padding=True, truncation=True,
+                             max_length=self.max_length, return_tensors="pt")
+        feeds = {k: enc[k].numpy() for k in ("input_ids", "attention_mask") if k in self.input_names}
+        logits = self.sess.run(None, feeds)[0]
+        return [float(x) for x in logits.reshape(-1)]
+
+
+def _build_reranker() -> Reranker | OnnxReranker:
+    s = get_settings()
+    if s.reranker_backend == "onnx":
+        path = Path(s.reranker_onnx_path)
+        if not path.is_absolute():
+            path = ROOT_DIR / path
+        return OnnxReranker(path)
+    return Reranker()
+
+
+def get_reranker() -> Reranker | OnnxReranker:
     global _reranker
     if _reranker is None:
-        _reranker = Reranker()
+        _reranker = _build_reranker()
     return _reranker
 
 

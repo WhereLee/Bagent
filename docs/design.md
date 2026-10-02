@@ -156,3 +156,11 @@ M2/M3 会用 **golden set 上的 recall@k 消融实验**比较不同 chunk_size/
 为把 rerank 留在 4G 服务器本地跑、又不被"1.1G 模型传输/CPU 吞吐"卡：Reranker 做成可插拔 fp32/int8（PyTorch 动态量化 quantize_dynamic，只量 Linear，稳、无 ONNX 依赖链）。
 本机实测：体积 1112→770MB(−31%)、打分 ×2.4 快。质量用 eval_rerank_ab.py 在 DuRetrieval A/B(cand=20,K=10,n=40)：recall@10 +0.000、MRR −0.012、nDCG −0.009，均在 95%CI 内 → int8 采纳。
 教训：toy 样本的排名一致性 ρ=0.875 是 n=3 假警报；量化掉不掉要在真实基准上测 Δ±CI 判，别信经验数。默认 RERANKER_INT8=false，生产按需开；换领域复测。
+
+## 16. Reranker ONNX int8（磁盘级量化）
+澄清：前面 torch 动态 int8 是"加载时在内存量化"，磁盘仍是 1.1G fp32。要做"磁盘也小"需导出量化后的模型：
+scripts/export_reranker_onnx.py 用 torch.onnx.export(fp32 .onnx) → onnxruntime.quantization 动态 int8 → model_int8.onnx（279MB）。
+Reranker 增 OnnxReranker 后端（同 .rerank 接口，喂 input_ids/attention_mask），config reranker_backend=st|onnx 选择。
+三方 A/B(eval_rerank_ab.py, DuRetrieval cand=20 K=10 n=40)：onnx-int8 recall@10 0.902/mrr 1.000/ndcg 0.938，
+对比 st-fp32(0.905/1.000/0.943) Δ 均在 95%CI 内、且优于 torch st-int8(mrr0.988)。生产建议 RERANKER_BACKEND=onnx。
+依赖：onnxruntime(运行时,可选) 入 requirements；onnx(导出) 入 requirements-dev。onnx 产物不入 git(models/ 忽略)。

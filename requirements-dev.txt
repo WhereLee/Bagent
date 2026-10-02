@@ -4,5 +4,8 @@
 # 压测
 locust>=2.30,<3
 
+# 模型导出/量化（scripts/export_reranker_onnx.py）
+onnx>=1.15,<2
+
 # 评测数据集（C-MTEB / RGB 等基准）
 datasets>=3.0,<4

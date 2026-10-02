@@ -101,10 +101,15 @@ tests/  docs/  models/
 结论：**hybrid 显著提升 recall@3（+0.18）**，**rerank 显著提升排序质量（MRR/nDCG）**；
 rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——该取舍在 M3 调候选池/阈值。
 
-**Reranker int8 动态量化**（`scripts/quantize_reranker.py` + `scripts/eval_rerank_ab.py`，本机实测）：
-体积 1112→770MB（−31%）、rerank **×2.4 快**；DuRetrieval A/B(cand=20,K=10,n=40)：recall@10 **+0.000**、
-MRR −0.012、nDCG −0.009（**均在 95%CI 内**）。结论：4G CPU 机上默认开 int8 净赚；换领域需复测。
-开关 `RERANKER_INT8=true`（Reranker 可插拔 fp32/int8）。
+**Reranker 量化（三方 A/B，`scripts/eval_rerank_ab.py` 本机实测）**：导出 ONNX int8（`scripts/export_reranker_onnx.py`）后，磁盘 **1.1G→279MB**；DuRetrieval(cand=20,K=10,n=40)：
+
+| backend | recall@10 | mrr | ndcg@10 |
+|---|---|---|---|
+| st-fp32 | 0.905 | 1.000 | 0.943 |
+| st-int8(torch) | 0.905 | 0.988 | 0.934 |
+| **onnx-int8** | 0.902 | **1.000** | 0.938 |
+
+→ **生产用 `RERANKER_BACKEND=onnx` + int8**：mrr 与 fp32 持平、nDCG/recall 掉 <0.005（均在 95%CI 内），比 torch 动态 int8 更稳。Reranker 可插拔 st/onnx。
 
 ## 生成质量验证（消融，本地复现：`scripts/eval_generation.py`）
 

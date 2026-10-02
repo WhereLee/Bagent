@@ -20,7 +20,8 @@ from app.config import ROOT_DIR  # noqa: E402
 from app.evaluation.metrics import mrr, ndcg_at_k, recall_at_k  # noqa: E402
 from app.evaluation.stats import summarize  # noqa: E402
 from app.retrieval import retriever  # noqa: E402
-from app.retrieval.rerank import Reranker  # noqa: E402
+from app.retrieval.rerank import OnnxReranker, Reranker  # noqa: E402
+from app.config import ROOT_DIR as _ROOT  # noqa: E402
 
 
 def ranked_sources(query, fetch, r, cand):
@@ -51,20 +52,23 @@ def main(k: int, limit: int, cand: int) -> None:
     r = Reranker(int8=False)
     retriever.get_reranker = lambda: r          # 强制用同一实例（可就地量化切换）
 
-    fp = run_pass(golden, k, r, cand, fetch)
-    r.quantize_dynamic()                         # 就地 int8
-    q = run_pass(golden, k, r, cand, fetch)
+    p_fp32 = run_pass(golden, k, r, cand, fetch)
+    r.quantize_dynamic()                         # 就地 torch int8
+    p_tint8 = run_pass(golden, k, r, cand, fetch)
 
-    print(f"\n# Reranker 量化 A/B (DuRetrieval, cand={cand}, K={k}, n={len(golden)})\n")
-    print(f"{'metric':<12}{'fp32':>22}{'int8':>22}{'Δ':>12}")
-    print("-" * 68)
+    onnx = OnnxReranker(_ROOT / "models" / "reranker-onnx" / "model_int8.onnx")
+    retriever.get_reranker = lambda: onnx
+    p_onnx = run_pass(golden, k, onnx, cand, fetch)
+
+    print(f"\n# Reranker 量化 A/B (DuRetrieval, cand={cand}, K={k}, n={len(golden)}) — 均值±95%CI\n")
+    print(f"{'metric':<12}{'st-fp32':>20}{'st-int8':>20}{'onnx-int8':>20}")
+    print("-" * 72)
     for m in [f"recall@{k}", "mrr", f"ndcg@{k}"]:
-        a, b = fp[m], q[m]
-        d = b["mean"] - a["mean"]
-        left = f"{a['mean']:.3f}±{(a['ci_high']-a['ci_low'])/2:.3f}"
-        right = f"{b['mean']:.3f}±{(b['ci_high']-b['ci_low'])/2:.3f}"
-        print(f"{m:<12}{left:>22}{right:>22}{d:>+12.3f}")
-    print("\n判读：Δ 落在 CI 噪声内或 nDCG 掉 <~1% → int8 可采纳；否则退 fp16/ONNX 或不量化。")
+        a, b, c2 = p_fp32[m], p_tint8[m], p_onnx[m]
+        cell = lambda s: f"{s['mean']:.3f}±{(s['ci_high']-s['ci_low'])/2:.3f}"
+        print(f"{m:<12}{cell(a):>20}{cell(b):>20}{cell(c2):>20}")
+    print("\n判读：与 st-fp32 同行比，Δ 落在 CI 内或 nDCG 掉 <~1% → 该后端可采纳。")
+    print("onnx-int8 额外收益：磁盘 279MB（vs 1.1G）、CPU 推理更快。")
 
 
 if __name__ == "__main__":

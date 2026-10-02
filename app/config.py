@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     rerank_skip_threshold: float | None = None
     reranker_int8: bool = False      # int8 动态量化（需先过 A/B 精度实测）
     rerank_threads: int = 0          # >0 时限制 torch 线程，防并发过订
+    reranker_backend: str = "st"     # st(sentence-transformers) | onnx(导出的小模型)
+    reranker_onnx_path: str = "models/reranker-onnx/model_int8.onnx"  # backend=onnx 时用
 
     # --- Generation / Evidence chain (M3) ---
     force_citation: bool = True          # 是否强制引用（消融对照）
