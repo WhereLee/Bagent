@@ -97,3 +97,28 @@ M2/M3 会用 **golden set 上的 recall@k 消融实验**比较不同 chunk_size/
 `HF_HUB_OFFLINE=1`。db 用 `pgvector/pgvector:pg16`，宿主机映射 5433 避开本机 5432。
 
 **CI 三 job**：`unit-tests`（hermetic）、`secret-scan`（守 .env/密钥不入库）、`docker-build`（验证镜像可构建，仅 push 触发）。
+
+## 11. M5：接入标准基准 + 补齐 #1–#4
+
+**为何用标准基准而非自造/爬取**：自造 4 篇语料的数字只“看趋势”；爬豆瓣 UGC 有 ToS/版权/不可复现风险。
+改用 **C-MTEB/DuRetrieval**（中文通用、Apache-2.0、自带 qrels），评估可信且可复现。
+
+**文档级相关性（解耦切块）**：bench 中每个 passage 当一个文档(source=pid)；相关性 = 召回块的 source 是否 ∈ 该 query 的相关
+ passage 集。这样 recall 不再受“gold 被切块边界切断”干扰，才能公平地做 #1 扫参。
+
+**独立 bench 库**：基准评测写 `bagent_bench`，不污染 demo 库；`prepare_dataset.py` 首次拉取后本地缓存
+原始数据（避免重复流扫、更稳）。
+
+**#2 两段式与 candidate 旋钮**：recall 应在“检索层候选集”与“答案层 top_k”分开看；rerank 只重排不新增候选，
+因此增大 candidate_n 提召回、但可能稀释 top_k 排序——c20 排序优、c50 召回优，是真实的 recall↔精度前沿。
+
+**#3 正确性修复**（非新功能，是 bug）：旧 BM25 载入不过滤 `is_deleted`、软删不改 count/max_id 故不重建——已删文档仍被召回。
+修法：载入与 generation 都 join documents 过滤软删、版本含 `max(updated_at)`；`index_document` 改为按 `source` upsert（内容变更替换旧块），
+新增 `delete_document`。`verify_incremental.py` 实证两路都不再召回已删文档。
+
+**性能取舍**：rerank 在 CPU 上对大候选池很贵（c100 全量扫参本机会超时）；已将精排限为“前 candidate_n 个”，
+且扫参默认只跑 dense/hybrid（#1 关心检索层尺寸效应）。属真实硬件约束，非简化功能。
+
+**生成侧基准 RGB**：RGB 自带 positive/negative 文档，评测不经我们的库检索，直接构造上下文测生成侧：
+噪声鲁棒（cited 答案命中 0.917 / faithfulness 0.921）与负例拒答（强制引用 0.833 vs 基础提示 0.750）。
+意义：把 M3 “收紧引用+拒答提示”的收益放到公认基准上量化（+8.3pp 拒答），而不是自造集自证。

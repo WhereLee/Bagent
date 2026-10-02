@@ -3,3 +3,6 @@
 
 # 压测
 locust>=2.30,<3
+
+# 评测数据集（C-MTEB / RGB 等基准）
+datasets>=3.0,<4

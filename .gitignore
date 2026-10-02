@@ -20,6 +20,12 @@ data/corpus/*
 !data/corpus/.gitkeep
 !data/corpus/*.md
 
+# Benchmark raw cache (bulk, re-fetchable); keep the small golden labels tracked
+data/benchmark/_du_cache.json
+
+# External benchmark repos (cloned on demand, not committed)
+data/_ext/
+
 # Logs / traces
 logs/
 *.log

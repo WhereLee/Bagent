@@ -17,7 +17,7 @@ from threading import Lock
 import jieba
 from sqlalchemy import func, select
 
-from app.db.models import Chunk
+from app.db.models import Chunk, Document
 from app.db.session import get_session
 
 # 常见中文标点/空白，分词后过滤
@@ -88,15 +88,24 @@ class LexicalRetriever:
 
     def __init__(self) -> None:
         self._index = BM25Index()
-        self._generation: tuple[int, int] = (-1, -1)
+        self._generation = (-1, -1, -1.0)
         self._lock = Lock()
 
-    def _current_generation(self, session) -> tuple[int, int]:
+    def _current_generation(self, session):
+        """活跃(未软删)子块的版本指纹：数量 + max(id) + max(updated_at epoch)。
+
+        软删除会改变活跃子块数与 documents.updated_at，从而触发重建。
+        """
         row = session.execute(
-            select(func.count(Chunk.id), func.coalesce(func.max(Chunk.id), 0))
-            .where(Chunk.embedding.isnot(None))
+            select(
+                func.count(Chunk.id),
+                func.coalesce(func.max(Chunk.id), 0),
+                func.coalesce(func.max(func.extract("epoch", Document.updated_at)), 0.0),
+            )
+            .join(Document, Document.id == Chunk.document_id)
+            .where(Chunk.embedding.isnot(None), Document.is_deleted == False)  # noqa: E712
         ).one()
-        return int(row[0]), int(row[1])
+        return int(row[0]), int(row[1]), float(row[2])
 
     def _ensure_index(self, session) -> None:
         gen = self._current_generation(session)
@@ -105,8 +114,11 @@ class LexicalRetriever:
         with self._lock:
             if self._current_generation(session) == self._generation and self._index.n:
                 return
+            # 只把未软删文档的子块纳入 BM25 索引（修复：旧版会召回已删文档）
             rows = session.execute(
-                select(Chunk.id, Chunk.content).where(Chunk.embedding.isnot(None))
+                select(Chunk.id, Chunk.content)
+                .join(Document, Document.id == Chunk.document_id)
+                .where(Chunk.embedding.isnot(None), Document.is_deleted == False)  # noqa: E712
             ).all()
             docs = [(r.id, tokenize(r.content)) for r in rows]
             self._index.build(docs)

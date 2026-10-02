@@ -51,11 +51,14 @@ def retrieve(
             candidates = [pool[cid] for cid in ordered_ids if cid in pool]
 
             if do_rerank and candidates:
+                # 只对粗召回的前 candidate_n 个精排（Cross-Encoder 贵，限制精排面）
+                to_rerank = candidates[:cand_n]
                 with STAGE_LATENCY.labels(stage="rerank").time():
-                    scores = get_reranker().rerank(query, [c.content for c in candidates])
-                for c, sc in zip(candidates, scores):
+                    scores = get_reranker().rerank(query, [c.content for c in to_rerank])
+                for c, sc in zip(to_rerank, scores):
                     c.score = sc
-                candidates.sort(key=lambda c: c.score, reverse=True)
+                to_rerank.sort(key=lambda c: c.score, reverse=True)
+                candidates = to_rerank
 
             top = candidates[:top_k]
             if s.retrieve_parent:

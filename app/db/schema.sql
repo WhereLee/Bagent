@@ -7,14 +7,16 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- 源文档：一个文件/一条 URL 对应一行
 CREATE TABLE IF NOT EXISTS documents (
     id          BIGSERIAL PRIMARY KEY,
-    source      TEXT        NOT NULL,           -- 文件路径 / URI
-    doc_hash    TEXT        NOT NULL UNIQUE,    -- 内容哈希，用于去重与增量更新
+    source      TEXT        NOT NULL,           -- 文件路径 / URI（自然主键，用于 upsert/删除）
+    doc_hash    TEXT        NOT NULL,           -- 内容哈希，用于变更检测（非唯一：允许历史软删行）
     media_type  TEXT,                            -- pdf / docx / md / html / txt
     metadata    JSONB       NOT NULL DEFAULT '{}'::jsonb,
     is_deleted  BOOLEAN     NOT NULL DEFAULT FALSE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source);
 
 -- 文本块 + 向量
 CREATE TABLE IF NOT EXISTS chunks (

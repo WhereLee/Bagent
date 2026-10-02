@@ -17,7 +17,7 @@ from app.observability.logging import configure_logging
 from app.observability.metrics import render_metrics
 from app.observability.middleware import ObservabilityMiddleware
 from app.ratelimit import RateLimiter
-from app.retrieval.store import vector_search
+from app.retrieval.store import delete_document, vector_search
 
 app = FastAPI(title="Bagent RAG", version="0.1.0")
 
@@ -38,6 +38,10 @@ def _startup() -> None:
 
 class IngestReq(BaseModel):
     path: str
+
+
+class DeleteReq(BaseModel):
+    source: str
 
 
 class QueryReq(BaseModel):
@@ -92,6 +96,20 @@ def search(req: SearchReq) -> dict:
         "query": req.query,
         "hits": [asdict(h) for h in hits],
     }
+
+
+@app.post("/delete")
+def delete_doc(req: DeleteReq) -> dict:
+    session = get_session()
+    try:
+        ok = delete_document(session, req.source)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+    return {"source": req.source, "deleted": ok}
 
 
 @app.post("/query")

@@ -5,7 +5,7 @@ import hashlib
 from dataclasses import dataclass
 
 import numpy as np
-from sqlalchemy import select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from app.db.models import Chunk, Document
@@ -32,31 +32,55 @@ class RetrievedChunk:
             self.context = self.content
 
 
-def _existing_doc(session: Session, doc_hash: str) -> Document | None:
-    return session.scalar(select(Document).where(Document.doc_hash == doc_hash))
+def _active_doc_by_source(session: Session, source: str) -> Document | None:
+    return session.scalar(
+        select(Document).where(Document.source == source, Document.is_deleted == False)  # noqa: E712
+    )
 
 
-def insert_parent_child(
+def delete_document(session: Session, source: str) -> bool:
+    """按 source 软删除文档。旧块仍在表中但被 is_deleted 过滤，检索不再召回；
+    同时 bump updated_at，令 BM25 generation 变化以重建词法索引。"""
+    doc = _active_doc_by_source(session, source)
+    if not doc:
+        return False
+    doc.is_deleted = True
+    doc.updated_at = func.now()
+    return True
+
+
+def index_document(
     session: Session,
     source: str,
     doc_text: str,
     media_type: str,
     parents: list[ParentChunk],
     child_vectors: np.ndarray,
-) -> tuple[int, int, bool]:
-    """写入父子块。child_vectors 与"按父块顺序展平的所有子块"一一对应。
+) -> tuple[int, int, str]:
+    """按 source 做 upsert 的索引写入（增量更新/重建链路）。
 
-    父块 embedding=NULL（仅供上下文），子块 embedding 有值（供检索）。
-    返回 (document_id, 子块数, 是否新建)。
+    - 同 source 且内容 hash 未变 -> 跳过（action=skipped）。
+    - 同 source 但内容变了 -> 删除旧块、复用文档行重写（action=updated）。
+    - 新 source -> 新建（action=created）。
+    返回 (document_id, 写入子块数, action)。
     """
     doc_hash = compute_doc_hash(doc_text)
-    existing = _existing_doc(session, doc_hash)
-    if existing:
-        return existing.id, 0, False
+    doc = _active_doc_by_source(session, source)
+    action = "created"
 
-    doc = Document(source=source, doc_hash=doc_hash, media_type=media_type, metadata_={})
-    session.add(doc)
+    if doc is not None:
+        if doc.doc_hash == doc_hash:
+            return doc.id, 0, "skipped"
+        # 内容变更：物理删旧块（活跃子块数随之变化 -> 触发词法重建）
+        session.execute(delete(Chunk).where(Chunk.document_id == doc.id))
+        doc.media_type = media_type
+        doc.updated_at = func.now()
+        action = "updated"
+    else:
+        doc = Document(source=source, doc_hash=doc_hash, media_type=media_type, metadata_={})
+        session.add(doc)
     session.flush()
+    doc.doc_hash = doc_hash
 
     vi = 0
     n_children = 0
@@ -88,7 +112,7 @@ def insert_parent_child(
             vi += 1
             n_children += 1
 
-    return doc.id, n_children, True
+    return doc.id, n_children, action
 
 
 def vector_search(session: Session, query_vec: np.ndarray, top_k: int) -> list[RetrievedChunk]:

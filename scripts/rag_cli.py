@@ -34,8 +34,7 @@ def cmd_ingest(target: str) -> None:
         return
     for f in files:
         r = ingest_file(f)
-        state = "新建" if r.created else "已存在(跳过)"
-        print(f"[ingest] {f} -> doc_id={r.document_id} parents={r.n_parents} children={r.n_children} {state}")
+        print(f"[ingest] {f} -> doc_id={r.document_id} parents={r.n_parents} children={r.n_children} {r.action}")
 
 
 def cmd_query(text: str, top_k: int | None) -> None:

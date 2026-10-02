@@ -82,6 +82,7 @@ tests/  docs/  models/
 - **M2 ✅**：检索质量 —— 混合检索(BM25+jieba / 稠密 / RRF) + Cross-Encoder rerank + 父子块(small-to-big)；golden set + recall@k/MRR/nDCG 消融。
 - **M3 ✅**：生成质量+证据链 —— faithfulness/幻觉率(LLM-as-judge)、引用校验与拒答收紧、多轮 query 改写、生成侧消融(含负向对照)。
 - **M4 ✅**：上线运维 —— 结构化 JSON 日志 + request_id、Prometheus 指标(/metrics)、令牌桶限流(429)、Locust 压测、Docker/compose 部署、CI 增强(secret-scan + docker-build)。
+- **M5 ✅**：评估可信度与工程补齐 —— ✅接入标准基准 C-MTEB/DuRetrieval(真 qrels、文档级)、✅修 #3 增量正确性 bug、✅#2 candidate 扫参、✅#1 chunk 尺寸扫参、✅生成侧接 RGB（拒答/噪声鲁棒）。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
@@ -122,4 +123,54 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 - **部署**：`docker compose up -d --build`（起 pgvector 库 + app；模型权重挂载 `./models`，不入镜像）。
 
 ### HTTP 端点
-`GET /health`、`GET /metrics`、`POST /ingest`、`POST /search`、`POST /query`、`POST /chat`（文档 `/docs`）。
+`GET /health`、`GET /metrics`、`POST /ingest`、`POST /delete`、`POST /search`、`POST /query`、`POST /chat`（文档 `/docs`）。
+
+## 标准基准评估（M5）
+
+不靠自造小语料自证——接入 **C-MTEB/DuRetrieval**（中文通用网页段落检索，带真 qrels），
+在**独立 bench 库**上评估，**文档级相关性**（与切块尺寸解耦），固定 seed + 本地缓存可复现。
+
+`scripts/prepare_dataset.py` 采样(1200 段落/80 查询)入库 → `scripts/eval_benchmark.py` 出数（K=10，40 查询）：
+
+| 配置 | recall@10 | mrr | ndcg@10 |
+|---|---|---|---|
+| dense | 0.963 | 0.946 | 0.941 |
+| hybrid | 0.976 | 0.942 | 0.933 |
+| hybrid+rerank c20 | 0.988 | **0.988** | **0.986** |
+| hybrid+rerank c50 | **1.000** | 0.971 | 0.978 |
+
+关键结论（#2）：**candidate_n 是真实的 recall↔精度旋钮**——c50 召回拉满(1.0)但排序不如 c20，c20 排序最优；
+诚实发现：hybrid 单独用在此数据上 MRR/nDCG 反而微降（RRF 把本来被 dense 排很高的 gold 挤动），
+证明“混合需与 rerank 配合”、而非无条件变好。
+
+`scripts/chunk_sweep.py` 输出 #1 的 chunk 尺寸消融（真 gold、文档级）。
+
+**#1 chunk 尺寸扫参**（doc-level K=10, 40 查询，同口径对比）：
+
+| child_tokens | 配置 | recall@10 | mrr | ndcg@10 |
+|---|---|---|---|---|
+| 150 | dense | 0.963 | 0.946 | 0.941 |
+| 150 | hybrid | 0.976 | 0.942 | 0.933 |
+| **300** | dense | **0.997** | 0.963 | **0.967** |
+| **300** | hybrid | 0.987 | **0.975** | 0.962 |
+
+结论：**更大子块(150→300)在本语料上提升 recall/nDCG**（切太小会把 gold 段落切断→召回受损）；
+但它是多目标（与 rerank 交互，之前 child=150+rerank c20 排序最优），非“越大越好”。现取 2 个尺寸点，更多点可重跑 `chunk_sweep.py`。
+
+### 顺带修掉的 #3 正确性 bug
+旧版 BM25 词法索引**不过滤 `is_deleted`**、软删不触发重建——会召回已删文档。已修：载入/版本检测均
+join documents 过滤 `is_deleted`；新增按 `source` 的 upsert（内容变更则替换旧块）与 `delete_document`。
+`scripts/verify_incremental.py` 实测：删除后 dense 与 lexical 两路均不再召回。
+
+### 生成侧基准（RGB 中文，`scripts/eval_rgb.py`，n=12）
+用 RGB 自带文档（positive=金标准 / negative=噪声）直接测生成侧证据链：
+
+| 能力 | 指标 | 值 |
+|---|---|---|
+| 噪声鲁棒 | 答案命中率(cited) | 0.917 |
+| 噪声鲁棒 | 平均 faithfulness(cited) | 0.921 |
+| 负例拒答 | 强制引用 SYSTEM_CITED | **0.833** |
+| 负例拒答 | 基础提示 SYSTEM_BASE | 0.750 |
+
+结论：M3 的“收紧引用+拒答”提示在**公认基准 RGB** 上把负例拒答率从 0.750 提到 **0.833（+8.3pp）**，
+噪声下仍有 0.92 faithfulness。诚实标注：拒答 83% 非 100%（仍有误答，阈值可再调），n=12 偏小。

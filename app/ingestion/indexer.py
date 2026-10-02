@@ -11,7 +11,7 @@ from app.db.session import get_session
 from app.ingestion.chunking import chunk_parent_child
 from app.ingestion.embedder import get_embedder
 from app.ingestion.parser import parse_file
-from app.retrieval.store import insert_parent_child
+from app.retrieval.store import index_document
 
 
 @dataclass
@@ -20,14 +20,14 @@ class IngestResult:
     document_id: int | None
     n_children: int
     n_parents: int
-    created: bool
+    action: str  # created / updated / skipped
 
 
 def ingest_file(path: str | Path) -> IngestResult:
     source = str(path)
     text, media_type = parse_file(path)
     if not text.strip():
-        return IngestResult(source, None, 0, 0, False)
+        return IngestResult(source, None, 0, 0, "empty")
 
     s = get_settings()
     parents = chunk_parent_child(
@@ -47,7 +47,7 @@ def ingest_file(path: str | Path) -> IngestResult:
 
     session = get_session()
     try:
-        doc_id, n_children, created = insert_parent_child(
+        doc_id, n_children, action = index_document(
             session, source, text, media_type, parents, vectors
         )
         session.commit()
@@ -57,4 +57,4 @@ def ingest_file(path: str | Path) -> IngestResult:
     finally:
         session.close()
 
-    return IngestResult(source, doc_id, n_children, len(parents), created)
+    return IngestResult(source, doc_id, n_children, len(parents), action)
