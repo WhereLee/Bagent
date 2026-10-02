@@ -73,6 +73,13 @@ RETRIEVAL_CACHE = Counter(
     ["result"],  # hit / miss
 )
 
+# --- 联网搜索 ---
+WEB_SEARCH = Counter(
+    "bagent_web_search_total",
+    "联网搜索调用",
+    ["provider", "outcome"],  # outcome: ok / empty / error
+)
+
 
 def render_metrics() -> tuple[bytes, str]:
     """返回 (/metrics 响应体, content-type)。"""

@@ -86,6 +86,7 @@ tests/  docs/  models/
 - **M6 ✅**：生产化 —— 多 LLM provider(DeepSeek 主/MiMo 备)+超时/重试退避/降级、检索结果缓存+自适应早退、API-Key 鉴权、prompt 注入防护。
 - **M7 ✅**：测试与评估纵深 —— CI 新增 **integration job**（真 pgvector 服务容器跑端到端检索/增量回归）、注入对抗测试集、bootstrap 置信区间、RGB 反事实/信息整合子集。
 - **M8 ✅**：Self-RAG 与知识冲突 —— 证据充分性自检 + 不足时改写重检(带上限) + 多源矛盾检测与降级；为接入联网多源预留中枢。
+- **M9a ✅**（进行中）：联网检索层 —— `SearchProvider` 抽象 + **SearXNG(百度系) provider** + trafilatura 抽正文/时效 + **SSRF/注入清洗** + mock provider + 自架部署物料；默认关，结果以 draft 进多源佐证。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
@@ -135,6 +136,11 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 - **注入对抗测试**：`tests/test_injection_adversarial.py` 用一批真实 payload 验证“防护真拦得住”（含发现并补全了 `new instructions:` 漏网模式）。
 - **bootstrap 置信区间**：`app/evaluation/stats.py` + `eval_benchmark` 输出“均值±95%CI”，不再报单点。实测 dense recall@10 0.859±0.099 vs hybrid 0.889±0.065。
 - **RGB 子集**：`eval_rgb.py` 扩展 counterfactual/integration。**诚实发现**：反事实集上“只信上下文”的严格 grounding 会被**错误文档 100% 带偏**（复述谬误）——纯 RAG 的固有软肋，也是为何需要自检式/多源佐证检索（③）。
+
+## 联网检索层（M9a）
+
+`app/search/`：**可插拔 `SearchProvider`**（`searxng` / `mock`，将来 `baidu_api`）+ **安全清洗**（SSRF 白名单：拒内网/回环/云元数据/非http；注入中和；长度限制）+ **trafilatura 抽正文/时间**。`web_search(q)` 把结果归一为 `RetrievedChunk(source_type=web, trust=draft)`，供 self-RAG 多源佐证。
+默认关（`WEB_SEARCH_ENABLED=false`）；自架后端见 `deploy/searxng/`（docker-compose + settings + 运行手册）。119 单测覆盖 provider 解析/编排/SSRF，全 hermetic（mock/假 client，不联网）。
 
 ## Self-RAG 与知识冲突（M8）
 

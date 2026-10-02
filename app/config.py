@@ -106,6 +106,18 @@ class Settings(BaseSettings):
     api_key: str = ""                 # 非空则启用 /query /search 等鉴权
     prompt_injection_guard: bool = True
 
+    # --- Web search / 联网 (M9a) ---
+    web_search_enabled: bool = False   # 默认关（不影响现有离线链路/测试）
+    search_provider: str = "mock"      # mock | searxng
+    searxng_base_url: str = "http://127.0.0.1:8080"
+    searxng_engines: str = "baidu"     # 逗号分隔，默认只百度
+    search_timeout: float = 8.0
+    search_user_agent: str = "BagentRAG/0.1"
+    web_search_max_results: int = 5
+    web_fetch_fulltext: bool = True    # 用 trafilatura 抽正文
+    web_content_max_chars: int = 4000
+    search_min_interval: float = 1.0   # 上游节流（护百度限流）
+
     @property
     def sqlalchemy_url(self) -> str:
         """SQLAlchemy 2.x + psycopg3 的连接串。"""

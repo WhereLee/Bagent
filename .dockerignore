@@ -8,6 +8,8 @@ __pycache__
 .env
 data/corpus/*
 !data/corpus/gateway_manual.md
+data/_ext/
+data/benchmark/_du_cache.json
 models/*
 !models/.gitkeep
 logs/

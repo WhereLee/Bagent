@@ -1,0 +1,37 @@
+# 放进 ./searxng/settings.yml（首次 docker compose up 会生成默认，再覆盖此文件重启）。
+# 关键：search.formats 必含 json（否则 API 返回 "Invalid JSON response"）；私有实例关 limiter。
+use_default_settings: true
+
+server:
+  secret_key: "CHANGE_ME-openssl-rand-hex-32"   # 必改
+  limiter: false                                 # 私有实例关闭限流页面
+  image_proxy: true
+
+redis:
+  url: redis://redis:6379/0
+
+search:
+  formats:
+    - html
+    - json                                       # ← 联网 API 必需
+  default_lang: "zh-CN"
+
+engines:
+  - name: baidu
+    engine: baidu
+    shortcut: bd
+    disabled: false
+    enable_http: false        # 强制 https
+  - name: 360search
+    engine: 360search
+    disabled: false
+  - name: sogou
+    engine: sogou
+    disabled: false
+  # CN 难达的关掉，减少超时与噪声
+  - name: google
+    disabled: true
+  - name: bing
+    disabled: true
+  - name: duckduckgo
+    disabled: true
