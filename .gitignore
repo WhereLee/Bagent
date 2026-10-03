@@ -38,3 +38,10 @@ Thumbs.db
 
 # 运维备忘（含服务器 IP/服务清单，基础设施信息不外泄）
 docs/服务器运维备忘.md
+
+# 大轮子/本地下载产物（不入库）
+_wheels/
+*.whl
+
+# 含密钥的部署脚本（绝不上库；实际 .env 在服务器端）
+deploy/server_serve.sh
