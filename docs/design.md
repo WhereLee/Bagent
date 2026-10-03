@@ -164,3 +164,9 @@ Reranker 增 OnnxReranker 后端（同 .rerank 接口，喂 input_ids/attention_
 三方 A/B(eval_rerank_ab.py, DuRetrieval cand=20 K=10 n=40)：onnx-int8 recall@10 0.902/mrr 1.000/ndcg 0.938，
 对比 st-fp32(0.905/1.000/0.943) Δ 均在 95%CI 内、且优于 torch st-int8(mrr0.988)。生产建议 RERANKER_BACKEND=onnx。
 依赖：onnxruntime(运行时,可选) 入 requirements；onnx(导出) 入 requirements-dev。onnx 产物不入 git(models/ 忽略)。
+
+## 17. 服务器量化落地约束（实测）
+- fp32 ONNX 导出在 4G 服务器可行；但 onnxruntime int8 量化峰值内存 >3.1G，**在 4G 机上 OOM(rc=137) 不可行**。
+- 正解：在内存充裕的机器(本机)导出+量化出 278MB model_int8.onnx → 传上服务器(md5 校验) → 就地删 1.1G fp32 源与中间 fp32.onnx。
+- 服务器运行时(⑤)务必装 **CPU 版 torch**(--index-url .../whl/cpu)，别装成 CUDA 版(占 5.7G 无用)；用完清 pip 缓存。
+- 教训：构建产物若在目标机做不动，就"在能做的机器产小成品传过去"，而非传大原料；且 scp 大文件不可中断取消(会得到大小对但内容坏的文件)，务必 md5 校验。
