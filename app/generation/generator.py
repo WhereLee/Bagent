@@ -50,11 +50,20 @@ def _build_context(chunks: list[RetrievedChunk], guard: bool = False) -> str:
     return "\n\n---\n\n".join(blocks)
 
 
-def _memory_context(query: str, user_id: str | None, tenant: str | None = None) -> str:
-    """取个人记忆（trust 门控+双时态）作为个性化上下文块；无则空。"""
+def _memory_context(
+    query: str, user_id: str | None, tenant: str | None = None,
+    *, use_memory: bool | None = None, min_trust: str | None = None, k: int | None = None,
+) -> str:
+    """召回记忆作为背景证据：personal(用户私有) + knowledge(共享、按 trust 门控)。
+
+    门控全靠 min_trust：draft 默认不参与作答（防污染），verified/curated 才进。use_memory/min_trust
+    供实验显式覆盖（不依赖全局 config）。"""
     s = get_settings()
-    if not (s.memory_enabled and user_id):
+    enabled = s.memory_enabled if use_memory is None else use_memory
+    if not enabled:
         return ""
+    trust = min_trust or s.memory_min_trust_for_answer
+    kk = k or s.memory_context_k
     from app.db.session import get_session
     from app.ingestion.embedder import get_embedder
     from app.memory.store import search_memories
@@ -62,13 +71,20 @@ def _memory_context(query: str, user_id: str | None, tenant: str | None = None) 
     session = get_session()
     try:
         vec = get_embedder().encode_query(query)
-        mems = search_memories(session, vec, scope="personal", owner_user_id=user_id,
-                               tenant=tenant, min_trust=s.memory_min_trust_for_answer, k=s.memory_context_k)
+        personal = search_memories(session, vec, scope="personal", owner_user_id=user_id,
+                                   tenant=tenant, min_trust=trust, k=kk) if user_id else []
+        knowledge = search_memories(session, vec, scope="knowledge", tenant=tenant,
+                                    min_trust=trust, k=kk)
     finally:
         session.close()
-    if not mems:
-        return ""
-    return "【关于用户的已知信息】\n" + "\n".join(f"- {m.content}" for m in mems)
+    blocks = []
+    if personal:
+        blocks.append("【关于用户的已知信息】\n" + "\n".join(f"- {m.content}" for m in personal))
+    if knowledge:
+        blocks.append("【已沉淀的知识（按可信度）】\n" + "\n".join(
+            f"- {m.content}" + (f"（来源:{m.source_ref or m.source_type}）" if m.source_ref else "")
+            for m in knowledge))
+    return "\n\n".join(blocks)
 
 
 def answer_query(
@@ -80,6 +96,8 @@ def answer_query(
     self_rag: bool | None = None,
     user_id: str | None = None,
     tenant: str | None = None,
+    use_memory: bool | None = None,
+    memory_min_trust: str | None = None,
 ) -> Answer:
     s = get_settings()
     force_citation = s.force_citation if force_citation is None else force_citation
@@ -109,7 +127,8 @@ def answer_query(
     # 3) 生成（可选强制引用；citation 编号与检索列表 1:1）
     retrieval_context = _build_context(chunks, guard=guard)   # 仅 KB/联网，供忠实度判定
     context = retrieval_context
-    mem_block = _memory_context(rewritten, user_id, tenant)
+    mem_block = _memory_context(rewritten, user_id, tenant,
+                                use_memory=use_memory, min_trust=memory_min_trust)
     if mem_block:
         context = mem_block + "\n\n---\n\n" + context          # 记忆只用于个性化生成，不计入忠实度证据
     system = SYSTEM_CITED if force_citation else SYSTEM_BASE

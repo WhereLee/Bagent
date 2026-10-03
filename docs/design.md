@@ -187,3 +187,9 @@ Reranker 增 OnnxReranker 后端（同 .rerank 接口，喂 input_ids/attention_
 - 三路一致：vector_search(d.metadata->>'tenant')、BM25(内存索引存 tenant 列表+search 过滤)、缓存 key 含 tenant。delete_document 带 tenant 只能删本租户。
 - 记忆：memories.tenant_id 列(幂等 ALTER)；add/search/find_similar/list 全按 tenant 分域去重与过滤。
 测试：146 单测(含 TestClient fail-closed 403) + 9 集成(跨租户 dense/hybrid 不召回对方、跨租户删除拒绝)。默认 TENANT_ENFORCEMENT_ENABLED=false 不改现有行为。
+
+## 21. P0 写回记忆抗污染 A/B（含自曝边界）
+先重审原计划、补回被简化的降级：三臂(A0记忆关/A1 naive/A2门控)+合谋泄漏臂(A2b)、四类判定(把"同时给对错值"识别为主动暴露冲突而非污染)、双场景(conflict / kb_silent)、n 提到~100程序化生成+每探针重复压 LLM 抖动、隔离库 bagent_exp。
+关键发现1(设计缺陷自我纠正)：只测 conflict(KB 有真相)会得到"污染恒 0%"的**无区分度**结果——因为真相当场、错误值翻不了车；真正的风险在 **kb_silent**(库无该事实、写回记忆是唯一来源)，naive 83.3%±20.8 污染 → 门控 0%(安全拒答) → 合谋促升 50% 泄漏。
+关键发现2(真缺口)：knowledge 记忆此前只写不读，/query 仅召回 personal → "防污染门控"守的是空路径；已修：_memory_context 同时按 trust 召回 personal+knowledge。
+边界(不粉饰)：多源佐证≠真相，两个都错且一致会被促升绕过门控(50%)→ 需来源真实性/多样性、促升人工确认。

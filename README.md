@@ -167,6 +167,21 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 - **异步写回**：`BackgroundTasks` 跑 `run_writeback`（抽取→去重决策 ADD/UPDATE/NOOP→写入），不阻塞回答（sleep-time）。
 - 135 单测(含生命周期/解析/写回编排) + 6 集成(真 pgvector 验证 trust 门控与双时态)。
 
+## 写回记忆抗污染——端到端 A/B 证据（P0）
+
+`scripts/eval_writeback_contamination.py`（隔离库 bagent_exp，rerank 关，真跑）。**两类场景×四臂**，四类判定（correct/wrong污染/conflict暴露/abstain），污染率带 bootstrap 95%CI。
+**kb_silent（库里无该事实、写回错误记忆是唯一来源）——写回真正的风险：**
+
+| 臂 | 污染率 | 解读 |
+|---|---|---|
+| A0 记忆关 | 0% | 地板 |
+| A1 naive（draft 参与作答）| **83.3%±20.8** | 把错误记忆当唯一来源→答错 |
+| **A2 门控（draft 不作答）**| **0%** | 100% 安全 abstain |
+| A2b 合谋（2 源促升为 verified）| **50%** | 多源佐证把错误抬进 verified→**绕过门控（已知边界）** |
+
+conflict 场景（KB 有真相）各臂污染均 0%，naive 还会 41.7% 主动标出分歧。**结论：trust 门控把写回污染从 83% 压到 0%（转为安全拒答）；但“多源一致”≠真相，合谋可绕过——已如实标为边界（需来源真实性/人工促升）。** 同时本实验暴露并修复了一个真缺口：knowledge 记忆此前根本没接回作答路径，现已按 trust 接通。
+（n=12 为初步信号；n=100×2 正式跑已后台启动，结果刷新到本节/`docs/design.md §21`。）
+
 ## 多租户数据面强制（⑥/M10）
 
 按既定拆分：**管理面(Java) 不属本仓**；本仓做 **数据面强制**（不可外包给网关）：
