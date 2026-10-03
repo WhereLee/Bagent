@@ -50,6 +50,27 @@ def _build_context(chunks: list[RetrievedChunk], guard: bool = False) -> str:
     return "\n\n---\n\n".join(blocks)
 
 
+def _memory_context(query: str, user_id: str | None) -> str:
+    """取个人记忆（trust 门控+双时态）作为个性化上下文块；无则空。"""
+    s = get_settings()
+    if not (s.memory_enabled and user_id):
+        return ""
+    from app.db.session import get_session
+    from app.ingestion.embedder import get_embedder
+    from app.memory.store import search_memories
+
+    session = get_session()
+    try:
+        vec = get_embedder().encode_query(query)
+        mems = search_memories(session, vec, scope="personal", owner_user_id=user_id,
+                               min_trust=s.memory_min_trust_for_answer, k=s.memory_context_k)
+    finally:
+        session.close()
+    if not mems:
+        return ""
+    return "【关于用户的已知信息】\n" + "\n".join(f"- {m.content}" for m in mems)
+
+
 def answer_query(
     query: str,
     top_k: int | None = None,
@@ -57,6 +78,7 @@ def answer_query(
     force_citation: bool | None = None,
     check_faithfulness: bool | None = None,
     self_rag: bool | None = None,
+    user_id: str | None = None,
 ) -> Answer:
     s = get_settings()
     force_citation = s.force_citation if force_citation is None else force_citation
@@ -85,6 +107,9 @@ def answer_query(
 
     # 3) 生成（可选强制引用；citation 编号与检索列表 1:1）
     context = _build_context(chunks, guard=guard)
+    mem_block = _memory_context(rewritten, user_id)
+    if mem_block:
+        context = mem_block + "\n\n---\n\n" + context
     system = SYSTEM_CITED if force_citation else SYSTEM_BASE
     try:
         text = get_llm().generate(system=system, user=f"【参考资料】\n{context}\n\n【问题】\n{rewritten}")

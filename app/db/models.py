@@ -47,3 +47,26 @@ class Chunk(Base):
     embedding: Mapped[list[float] | None] = mapped_column(Vector(512))
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Memory(Base):
+    """M9b 记忆：scope=personal(私有)/knowledge(共享)，双时态 + trust 生命周期。"""
+    __tablename__ = "memories"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    scope: Mapped[str] = mapped_column(String)
+    owner_user_id: Mapped[str | None] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String, default="fact")
+    content: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(Text)
+    source_type: Mapped[str] = mapped_column(String, default="research")
+    source_ref: Mapped[str | None] = mapped_column(Text)
+    trust: Mapped[str] = mapped_column(String, default="draft")
+    confidence: Mapped[float] = mapped_column(default=0.5)
+    support: Mapped[int] = mapped_column(Integer, default=1)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(512))
+    valid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    invalid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

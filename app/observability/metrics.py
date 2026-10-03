@@ -80,6 +80,13 @@ WEB_SEARCH = Counter(
     ["provider", "outcome"],  # outcome: ok / empty / error
 )
 
+# --- 记忆写回 (M9b) ---
+MEMORY_OPS = Counter(
+    "bagent_memory_ops_total",
+    "记忆操作",
+    ["scope", "op"],  # op: add/update/noop/promote/invalidate
+)
+
 
 def render_metrics() -> tuple[bytes, str]:
     """返回 (/metrics 响应体, content-type)。"""

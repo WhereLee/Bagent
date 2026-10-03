@@ -1,0 +1,75 @@
+"""记忆 store 的集成测试：真 pgvector + bge embedding，验证 trust 门控与双时态过滤。"""
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from app.db.session import get_session, init_schema
+from app.ingestion.embedder import get_embedder
+from app.memory import store as ms
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture()
+def owner():
+    init_schema()
+    return "it-" + uuid.uuid4().hex[:8]
+
+
+def _v(text):
+    return get_embedder().encode_documents([text])[0]
+
+
+def test_add_search_trust_and_timewindow(owner):
+    s = get_session()
+    try:
+        ms.add_memory(s, scope="personal", owner_user_id=owner, content="用户喜欢靠窗",
+                      embedding=_v("用户喜欢靠窗座位"), trust="verified")
+        ms.add_memory(s, scope="personal", owner_user_id=owner, content="用户讨厌辣",
+                      embedding=_v("用户不喜欢吃辣"), trust="draft")
+        ms.add_memory(s, scope="personal", owner_user_id=owner, content="过期记忆",
+                      embedding=_v("这是一条已失效的记忆"), trust="verified",
+                      invalid_at=datetime.now(timezone.utc) - timedelta(days=1))
+        s.commit()
+
+        # 只有 verified 参与（draft 被门控挡掉）
+        hits = ms.search_memories(s, _v("座位偏好"), scope="personal", owner_user_id=owner,
+                                 min_trust="verified", k=5)
+        contents = [m.content for m in hits]
+        assert "用户喜欢靠窗" in contents
+        assert "用户讨厌辣" not in contents          # draft 过滤
+        assert "过期记忆" not in contents            # invalid_at 过去 -> 过滤
+    finally:
+        s.rollback(); s.close()
+
+
+def test_dedup_by_hash(owner):
+    s = get_session()
+    try:
+        c = "幂等测试" + owner
+        r1, new1 = ms.add_memory(s, scope="knowledge", content=c, embedding=_v(c), trust="draft")
+        r2, new2 = ms.add_memory(s, scope="knowledge", content=c, embedding=_v(c), trust="draft")
+        assert new1 is True and new2 is False        # 同内容 hash 幂等
+        assert r1.id == r2.id
+    finally:
+        s.rollback(); s.close()
+
+
+def test_promote_and_invalidate(owner):
+    s = get_session()
+    try:
+        r, _ = ms.add_memory(s, scope="knowledge", content="促升测试" + owner,
+                             embedding=_v("促升测试"), trust="draft")
+        s.commit()
+        mid = r.id
+        assert ms.set_trust(s, mid, "verified")
+        s.commit()
+        assert s.get(ms.Memory, mid).trust == "verified"
+        assert ms.invalidate(s, mid)
+        s.commit()
+        assert s.get(ms.Memory, mid).invalid_at is not None
+    finally:
+        s.rollback(); s.close()

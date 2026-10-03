@@ -87,6 +87,7 @@ tests/  docs/  models/
 - **M7 ✅**：测试与评估纵深 —— CI 新增 **integration job**（真 pgvector 服务容器跑端到端检索/增量回归）、注入对抗测试集、bootstrap 置信区间、RGB 反事实/信息整合子集。
 - **M8 ✅**：Self-RAG 与知识冲突 —— 证据充分性自检 + 不足时改写重检(带上限) + 多源矛盾检测与降级；为接入联网多源预留中枢。
 - **M9a ✅**（进行中）：联网检索层 —— `SearchProvider` 抽象 + **SearXNG(百度系) provider** + trafilatura 抽正文/时效 + **SSRF/注入清洗** + mock provider + 自架部署物料；默认关，结果以 draft 进多源佐证。
+- **M9b ✅**：写回记忆 —— **个人/知识双库分离** + **双时态**(valid_at/invalid_at) + **trust 生命周期**(draft→verified→curated，多源佐证促升) + **sleep-time 异步写回**(不阻塞回答) + 检索按 trust 门控。默认关。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
@@ -146,6 +147,15 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 - **注入对抗测试**：`tests/test_injection_adversarial.py` 用一批真实 payload 验证“防护真拦得住”（含发现并补全了 `new instructions:` 漏网模式）。
 - **bootstrap 置信区间**：`app/evaluation/stats.py` + `eval_benchmark` 输出“均值±95%CI”，不再报单点。实测 dense recall@10 0.859±0.099 vs hybrid 0.889±0.065。
 - **RGB 子集**：`eval_rgb.py` 扩展 counterfactual/integration。**诚实发现**：反事实集上“只信上下文”的严格 grounding 会被**错误文档 100% 带偏**（复述谬误）——纯 RAG 的固有软肋，也是为何需要自检式/多源佐证检索（③）。
+
+## 写回记忆（M9b）
+
+`app/memory/`，`MEMORY_ENABLED=true` 且 `/query /chat` 传 `user_id` 时启用（默认关）：
+- **双库分离**：`memories` 表按 `scope` 分 personal(用户私有, 注入作答) 与 knowledge(共享) —— 避免“把偏好当共享知识”/“把未证网络结论当常识”。
+- **双时态**：`valid_at/invalid_at`（联网知识会过期），检索自动排除已失效行。
+- **trust 生命周期**：个人偏好亲述即 verified；知识结论先 **draft**（默认不作答，防自毒），多次佐证 support≥阈值促升 verified；`/memory/promote`、`/memory/invalidate` 手动升降。
+- **异步写回**：`BackgroundTasks` 跑 `run_writeback`（抽取→去重决策 ADD/UPDATE/NOOP→写入），不阻塞回答（sleep-time）。
+- 135 单测(含生命周期/解析/写回编排) + 6 集成(真 pgvector 验证 trust 门控与双时态)。
 
 ## 联网检索层（M9a）
 

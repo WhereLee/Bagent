@@ -55,3 +55,12 @@ CONFLICT_SYSTEM = (
     '{"conflict": true/false, "explanation": "简述"}。若资料分别说的是不同对象则不算矛盾。'
 )
 CONFLICT_USER = "【问题】\n{question}\n\n{context}"
+
+# M9b 记忆抽取：从一轮对话中抽出“值得长期记住”的事实，并判作 personal/knowledge
+MEMORY_EXTRACT_SYSTEM = (
+    "你是记忆管理员。从【对话】中提炼少量值得长期记住的事实（用户偏好归 personal；"
+    "客观知识/调研结论归 knowledge）。宁缺毋滥，不记闲聊与一次性内容。"
+    '只输出 JSON 数组，每项 {"content":str, "scope":"personal|knowledge", "kind":"fact|preference|entity|claim"}；'
+    "无值得记的就输出 []。"
+)
+MEMORY_EXTRACT_USER = "【对话】\n{conversation}\n\nJSON："

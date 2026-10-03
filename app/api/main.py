@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 from starlette.responses import Response
 
@@ -11,9 +11,13 @@ from app.config import get_settings
 from app.db.session import get_engine, init_schema
 from app.generation.generator import answer_query
 from app.generation.llm import get_llm
+from app.ingestion.embedder import get_embedder
 from app.ingestion.indexer import ingest_file
 from app.db.session import get_session
-from app.observability.logging import configure_logging
+from app.memory.store import invalidate as mem_invalidate
+from app.memory.store import list_memories, set_trust
+from app.memory.writeback import run_writeback
+from app.observability.logging import configure_logging, get_logger
 from app.observability.metrics import render_metrics
 from app.observability.middleware import ObservabilityMiddleware
 from app.ratelimit import RateLimiter
@@ -50,6 +54,7 @@ class QueryReq(BaseModel):
     query: str
     top_k: int | None = None
     self_rag: bool | None = None   # 覆盖默认：是否启用 self-RAG/冲突检测
+    user_id: str | None = None     # 传入则启用个人记忆/写回
 
 
 class ChatReq(BaseModel):
@@ -57,6 +62,7 @@ class ChatReq(BaseModel):
     history: list[dict] = []  # [{"role":"user"|"assistant","content":str}]
     top_k: int | None = None
     self_rag: bool | None = None
+    user_id: str | None = None
 
 
 class SearchReq(BaseModel):
@@ -126,13 +132,89 @@ def delete_doc(req: DeleteReq) -> dict:
 
 
 @app.post("/query")
-def query(req: QueryReq) -> dict:
-    answer = answer_query(req.query, top_k=req.top_k, self_rag=req.self_rag)
+def query(req: QueryReq, background: BackgroundTasks) -> dict:
+    answer = answer_query(req.query, top_k=req.top_k, self_rag=req.self_rag, user_id=req.user_id)
+    _schedule_writeback(background, req.user_id, req.query, answer.text)
     return asdict(answer)
 
 
 @app.post("/chat")
-def chat(req: ChatReq) -> dict:
+def chat(req: ChatReq, background: BackgroundTasks) -> dict:
     """多轮问答：带上历史，服务端做查询改写后检索生成。"""
-    answer = answer_query(req.query, top_k=req.top_k, history=req.history, self_rag=req.self_rag)
+    answer = answer_query(req.query, top_k=req.top_k, history=req.history,
+                          self_rag=req.self_rag, user_id=req.user_id)
+    _schedule_writeback(background, req.user_id, req.query, answer.text)
     return asdict(answer)
+
+
+_log_api = get_logger("api")
+
+
+def _schedule_writeback(background: BackgroundTasks, user_id, query, answer_text) -> None:
+    if not (get_settings().memory_enabled and user_id):
+        return
+    background.add_task(_do_writeback, user_id, query, answer_text)
+
+
+def _do_writeback(user_id: str, query: str, answer_text: str) -> None:
+    """sleep-time：回答之后后台写回，失败不影响已返回的响应。"""
+    s = get_settings()
+    session = get_session()
+    try:
+        conv = f"用户：{query}\n助手：{answer_text}"
+        run_writeback(session=session, conversation=conv, user_id=user_id,
+                      llm=get_llm(), embedder=get_embedder(),
+                      dedup_sim=s.memory_dedup_sim, promote_threshold=s.memory_promote_support)
+    except Exception as e:  # noqa: BLE001
+        session.rollback()
+        _log_api.warning("writeback_failed", err=str(e)[:160])
+    finally:
+        session.close()
+
+
+class MemoryPromoteReq(BaseModel):
+    id: int
+    trust: str  # draft|verified|curated
+
+
+class MemoryInvalidateReq(BaseModel):
+    id: int
+
+
+@app.get("/memory")
+def memory_list(scope: str | None = None, user_id: str | None = None, limit: int = 50) -> dict:
+    session = get_session()
+    try:
+        rows = list_memories(session, scope=scope, owner_user_id=user_id, limit=limit)
+        return {"count": len(rows), "memories": [
+            {"id": m.id, "scope": m.scope, "owner": m.owner_user_id, "kind": m.kind,
+             "content": m.content, "trust": m.trust, "support": m.support,
+             "valid_at": m.valid_at.isoformat() if m.valid_at else None,
+             "invalid_at": m.invalid_at.isoformat() if m.invalid_at else None}
+            for m in rows]}
+    finally:
+        session.close()
+
+
+@app.post("/memory/promote")
+def memory_promote(req: MemoryPromoteReq) -> dict:
+    if req.trust not in ("draft", "verified", "curated"):
+        raise HTTPException(status_code=400, detail="bad trust")
+    session = get_session()
+    try:
+        ok = set_trust(session, req.id, req.trust)
+        session.commit()
+    finally:
+        session.close()
+    return {"id": req.id, "trust": req.trust, "ok": ok}
+
+
+@app.post("/memory/invalidate")
+def memory_invalidate(req: MemoryInvalidateReq) -> dict:
+    session = get_session()
+    try:
+        ok = mem_invalidate(session, req.id)
+        session.commit()
+    finally:
+        session.close()
+    return {"id": req.id, "invalidated": ok}

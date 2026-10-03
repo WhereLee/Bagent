@@ -122,6 +122,13 @@ class Settings(BaseSettings):
     web_content_max_chars: int = 4000
     search_min_interval: float = 1.0   # 上游节流（护百度限流）
 
+    # --- Memory / 写回记忆 (M9b) ---
+    memory_enabled: bool = False          # 默认关
+    memory_min_trust_for_answer: str = "verified"  # 参与作答的最低 trust
+    memory_promote_support: int = 2       # 佐证来源数≥此值促为 verified
+    memory_dedup_sim: float = 0.92        # 去重/更新的相似度阈值
+    memory_context_k: int = 3             # 注入作答的个人记忆条数
+
     @property
     def sqlalchemy_url(self) -> str:
         """SQLAlchemy 2.x + psycopg3 的连接串。"""

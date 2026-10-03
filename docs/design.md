@@ -170,3 +170,7 @@ Reranker 增 OnnxReranker 后端（同 .rerank 接口，喂 input_ids/attention_
 - 正解：在内存充裕的机器(本机)导出+量化出 278MB model_int8.onnx → 传上服务器(md5 校验) → 就地删 1.1G fp32 源与中间 fp32.onnx。
 - 服务器运行时(⑤)务必装 **CPU 版 torch**(--index-url .../whl/cpu)，别装成 CUDA 版(占 5.7G 无用)；用完清 pip 缓存。
 - 教训：构建产物若在目标机做不动，就"在能做的机器产小成品传过去"，而非传大原料；且 scp 大文件不可中断取消(会得到大小对但内容坏的文件)，务必 md5 校验。
+
+## 18. M9b 写回记忆
+双库分离(memories 表 scope=personal/knowledge)防“偏好当共享知识/未证结论当常识”；双时态 valid_at/invalid_at 表联网知识会过期；trust 生命周期 draft→verified→curated：个人偏好亲述即 verified(用户是自身偏好权威且私有低风险)，知识结论先 draft 且默认不参与作答(trust 门控)，多次佐证 support≥阈值促升。写回走 FastAPI BackgroundTasks(sleep-time 异步，不阻塞回答)：抽取事实(LLM, 纯解析可测)→按相似度 decide_op ADD/UPDATE/NOOP→写入。/memory 列举/promote/invalidate。默认 MEMORY_ENABLED=false。
+关键防自毒：未核实来源(web/research)默认 draft 且被 search_memories 的 min_trust 挡在作答之外，只有被多源佐证或人工 promote 才参与——这条生命周期就是为联网时代准备的。

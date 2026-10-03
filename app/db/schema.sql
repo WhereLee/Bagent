@@ -38,3 +38,30 @@ CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
 -- 用 cosine 距离，与 bge 归一化向量匹配。
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
     ON chunks USING hnsw (embedding vector_cosine_ops);
+
+-- M9b 记忆表：个人记忆(scope=personal, owner 私有) 与 知识记忆(scope=knowledge, 共享)
+-- 分置避免“把私有偏好当共享知识”；双时态(valid_at/invalid_at)+trust 生命周期(draft/verified/curated)。
+CREATE TABLE IF NOT EXISTS memories (
+    id            BIGSERIAL PRIMARY KEY,
+    scope         TEXT        NOT NULL,          -- personal | knowledge
+    owner_user_id TEXT,                          -- personal 必填；knowledge 为 NULL
+    kind          TEXT        NOT NULL DEFAULT 'fact',  -- fact/preference/entity/claim
+    content       TEXT        NOT NULL,
+    content_hash  TEXT        NOT NULL,          -- 幂等去重
+    source_type   TEXT        NOT NULL DEFAULT 'research',  -- kb/web/research/user
+    source_ref    TEXT,                          -- URL / doc source
+    trust         TEXT        NOT NULL DEFAULT 'draft',      -- draft/verified/curated
+    confidence    REAL        NOT NULL DEFAULT 0.5,
+    support       INT         NOT NULL DEFAULT 1,            -- 佐证来源数(多源佐证→促升)
+    embedding     vector(512),
+    valid_at      TIMESTAMPTZ,                   -- 何时起为真(NULL=立即)
+    invalid_at    TIMESTAMPTZ,                   -- 何时失效(NULL=有效中)
+    is_deleted    BOOLEAN     NOT NULL DEFAULT FALSE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_memories_scope_owner ON memories(scope, owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(content_hash);
+CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw
+    ON memories USING hnsw (embedding vector_cosine_ops);
