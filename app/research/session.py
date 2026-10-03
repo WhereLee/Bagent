@@ -15,19 +15,26 @@ from app.generation.citation import strip_invalid_citations
 from app.research.doc import Reference
 
 _lock = threading.Lock()
-_sessions: dict[str, ResearchDoc] = {}
+_sessions: dict[str, tuple[ResearchDoc, str | None]] = {}
 
 
-def create(doc: ResearchDoc) -> str:
+def create(doc: ResearchDoc, tenant: str | None = None) -> str:
     sid = uuid.uuid4().hex[:12]
     with _lock:
-        _sessions[sid] = doc
+        _sessions[sid] = (doc, tenant)
     return sid
 
 
-def get(sid: str) -> ResearchDoc | None:
+def get(sid: str, tenant: str | None = None) -> ResearchDoc | None:
+    """tenant 非空时仅返回属于该租户的会话（跨租户 sid 不可读）。"""
     with _lock:
-        return _sessions.get(sid)
+        entry = _sessions.get(sid)
+    if entry is None:
+        return None
+    doc, owner = entry
+    if tenant is not None and owner != tenant:
+        return None
+    return doc
 
 
 def clear() -> None:
@@ -40,7 +47,7 @@ def refine_section(
     max_iters: int = 2, kb_retrieve=None, web_retrieve=None, tenant: str | None = None,
 ) -> ResearchDoc | None:
     """重做第 index 节：重新取证并生成，回填全局引用编号。"""
-    doc = get(sid)
+    doc = get(sid, tenant)
     if doc is None or not (0 <= index < len(doc.sections)):
         return None
     title = doc.sections[index].title
@@ -53,14 +60,13 @@ def refine_section(
     refkey = {r.source: r.id for r in doc.references}
     local_to_global = {}
     for i, c in enumerate(chunks, 1):
-        gid = refkey.get(c.content)
+        gid = refkey.get(c.source)
         if gid is None:
             ref = Reference(id=len(doc.references) + 1, source=c.source, url=c.metadata.get("url"),
                             source_type=c.metadata.get("source_type", "kb"),
                             trust=c.metadata.get("trust", "curated"), published=c.metadata.get("published"))
             doc.references.append(ref)
-            refkey[c.content] = ref.id
-            refkey.setdefault(c.source, ref.id)
+            refkey[c.source] = ref.id
             gid = ref.id
         local_to_global[i] = gid
     ctx = "\n\n".join(f"[{i}] {c.context}" for i, c in enumerate(chunks, 1))

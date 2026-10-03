@@ -115,19 +115,24 @@ def search_memories(session: Session, vec, *, scope: str | None = None,
     return list(session.scalars(q).all())
 
 
-def set_trust(session: Session, mem_id: int, trust: str) -> bool:
+def set_trust(session: Session, mem_id: int, trust: str, tenant: str | None = None) -> bool:
     row = session.get(Memory, mem_id)
     if row is None:
         return False
+    if tenant is not None and row.tenant_id != tenant:
+        return False                              # 跨租户不得改他人记忆(fail-closed)
     row.trust = trust
     row.updated_at = func.now()
     return True
 
 
-def invalidate(session: Session, mem_id: int, invalid_at: datetime | None = None) -> bool:
-    """标记失效（不删，保留历史）。默认此刻失效。"""
+def invalidate(session: Session, mem_id: int, invalid_at: datetime | None = None,
+               tenant: str | None = None) -> bool:
+    """标记失效（不删，保留历史）。默认此刻失效；tenant 非空则只能失效本租户的。"""
     row = session.get(Memory, mem_id)
     if row is None:
+        return False
+    if tenant is not None and row.tenant_id != tenant:
         return False
     row.invalid_at = invalid_at or datetime.now(timezone.utc)
     row.updated_at = func.now()

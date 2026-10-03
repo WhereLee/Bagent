@@ -83,13 +83,26 @@ def _merge(items: list[str], max_tokens: int) -> list[str]:
     return merged
 
 
+def _tail_by_tokens(text: str, tokens: int) -> str:
+    """按 token 权重从尾部取 <=tokens 的片段（CJK/英文口径一致）。"""
+    w = 0.0
+    rev: list[str] = []
+    for ch in reversed(text):
+        cw = _char_weight(ch)
+        if w + cw > tokens:
+            break
+        rev.append(ch)
+        w += cw
+    return "".join(reversed(rev))
+
+
 def _apply_overlap(chunks: list[str], overlap_tokens: int) -> list[str]:
-    """把前一块的尾部拼到当前块前面，形成重叠（会略微增大块体积）。"""
+    """把前一块尾部（按 token）拼到当前块前。调用方需预留 overlap 预算。"""
     if overlap_tokens <= 0 or len(chunks) <= 1:
         return chunks
     out = [chunks[0]]
     for prev, cur in zip(chunks, chunks[1:]):
-        tail = prev[-int(overlap_tokens * 2):]  # 近似：按字符粗略取前块尾部
+        tail = _tail_by_tokens(prev, overlap_tokens)
         out.append((tail + "\n" + cur).strip())
     return out
 
@@ -115,7 +128,8 @@ def chunk_text(
             else:
                 pieces.extend(_force_split(line, chunk_tokens))
 
-    blocks = _apply_overlap(_merge(pieces, chunk_tokens), overlap_tokens)
+    # 预留 overlap 预算，保证拼接尾部后成品仍 <=chunk_tokens
+    blocks = _apply_overlap(_merge(pieces, max(1, chunk_tokens - overlap_tokens)), overlap_tokens)
 
     return [
         ChunkResult(index=i, text=b.strip(), token_count=_approx_tokens(b))
@@ -141,7 +155,7 @@ def _pack(children_src: list[str], budget: int, overlap: int) -> list[str]:
             expanded.append(u)
         else:
             expanded.extend(_force_split(u, budget))
-    merged = _merge(expanded, budget)
+    merged = _merge(expanded, max(1, budget - overlap))
     return _apply_overlap(merged, overlap)
 
 

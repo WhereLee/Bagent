@@ -45,7 +45,7 @@ def retrieve(
         cached = cache.get(key)
         if cached is not None:
             RETRIEVAL_CACHE.labels(result="hit").inc()
-            return cached
+            return list(cached)   # 返回拷贝：防调用方(如 self-RAG append)污染缓存
         RETRIEVAL_CACHE.labels(result="miss").inc()
 
     qvec = get_embedder().encode_query(query)
@@ -92,7 +92,7 @@ def retrieve(
                 n_hits=len(top), top_score=round(top[0].score, 4) if top else None,
             )
             if cache is not None and key is not None:
-                cache.put(key, top)
-            return top
+                cache.put(key, list(top))
+            return list(top)
         finally:
             session.close()

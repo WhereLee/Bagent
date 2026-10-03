@@ -38,11 +38,5 @@ def constant_time_equal(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
-def build_tenant_filter(tenant: str | None) -> tuple[str, dict]:
-    """返回追加到 WHERE 的 SQL 片段与参数（元数据 tenant 精确匹配）。
-
-    仅接受白名单化的键名，值走参数化，杜绝 SQL 注入。
-    """
-    if not tenant:
-        return "", {}
-    return "AND c.metadata->>'tenant' = :tenant", {"tenant": tenant}
+# 租户过滤（⑥）真实现在 retrieval/store 与 memory/store 的 SQL 里（按 document 级
+# metadata.tenant + memories.tenant_id），不在此提供易误导的通用 helper。

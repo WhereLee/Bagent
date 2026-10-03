@@ -61,7 +61,7 @@ def research(
             continue
         local_to_global = {}
         for i, c in enumerate(chunks, 1):
-            gid = refkey.get(c.content)
+            gid = refkey.get(c.source)           # 以来源(source/url)为去重键，与 refine 一致
             if gid is None:
                 refs.append(Reference(
                     id=len(refs) + 1, source=c.source, url=c.metadata.get("url"),
@@ -70,7 +70,7 @@ def research(
                     published=c.metadata.get("published"),
                 ))
                 gid = len(refs)
-                refkey[c.content] = gid
+                refkey[c.source] = gid
             local_to_global[i] = gid
 
         ctx = "\n\n".join(f"[{i}] {c.context}" for i, c in enumerate(chunks, 1))

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from contextlib import asynccontextmanager
+
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from starlette.responses import Response
@@ -28,21 +30,24 @@ from app.retrieval.store import delete_document
 from app.research import agent as research_agent
 from app.research import session as research_session
 
-app = FastAPI(title="Bagent RAG", version="0.1.0")
+@asynccontextmanager
+async def _lifespan(_app):
+    """启动时：结构化日志 + 幂等建表 + 预热连接池（取代已弃用的 on_event）。"""
+    configure_logging(get_settings().log_level)
+    init_schema()
+    get_engine()
+    yield
+
+
+app = FastAPI(title="Bagent RAG", version="0.1.0", lifespan=_lifespan)
 
 _s = get_settings()
 if _s.rate_limit_enabled:
     _limiter: RateLimiter | None = RateLimiter(_s.rate_limit_per_sec, _s.rate_limit_burst)
 else:
     _limiter = None
-app.add_middleware(ObservabilityMiddleware, limiter=_limiter, api_key=(_s.api_key or None))
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    configure_logging(get_settings().log_level)
-    init_schema()          # 幂等建表
-    get_engine()           # 预热连接池
+app.add_middleware(ObservabilityMiddleware, limiter=_limiter, api_key=(_s.api_key or None),
+                   trust_proxy=_s.trust_proxy_headers)
 
 
 class IngestReq(BaseModel):
@@ -100,8 +105,17 @@ def metrics() -> Response:
 @app.post("/ingest")
 def ingest(req: IngestReq, request: Request) -> dict:
     tenant = _tenant_of(request)
+    # 路径限制在白名单目录下（防用任意 .txt/.md/.pdf 读取服务器文件并回显）
+    from pathlib import Path
+    from app.config import ROOT_DIR
+    root = (ROOT_DIR / get_settings().ingest_allowed_root).resolve()
     try:
-        result = ingest_file(req.path, tenant=tenant)
+        target = Path(req.path).resolve()
+        target.relative_to(root)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"ingest path 必须位于 {root} 下")
+    try:
+        result = ingest_file(target, tenant=tenant)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:  # noqa: BLE001
@@ -207,26 +221,32 @@ def memory_list(request: Request, scope: str | None = None, user_id: str | None 
 
 
 @app.post("/memory/promote")
-def memory_promote(req: MemoryPromoteReq) -> dict:
+def memory_promote(req: MemoryPromoteReq, request: Request) -> dict:
     if req.trust not in ("draft", "verified", "curated"):
         raise HTTPException(status_code=400, detail="bad trust")
+    tenant = _tenant_of(request)
     session = get_session()
     try:
-        ok = set_trust(session, req.id, req.trust)
+        ok = set_trust(session, req.id, req.trust, tenant=tenant)
         session.commit()
     finally:
         session.close()
+    if not ok:
+        raise HTTPException(status_code=403, detail="memory not found or not in your tenant")
     return {"id": req.id, "trust": req.trust, "ok": ok}
 
 
 @app.post("/memory/invalidate")
-def memory_invalidate(req: MemoryInvalidateReq) -> dict:
+def memory_invalidate(req: MemoryInvalidateReq, request: Request) -> dict:
+    tenant = _tenant_of(request)
     session = get_session()
     try:
-        ok = mem_invalidate(session, req.id)
+        ok = mem_invalidate(session, req.id, tenant=tenant)
         session.commit()
     finally:
         session.close()
+    if not ok:
+        raise HTTPException(status_code=403, detail="memory not found or not in your tenant")
     return {"id": req.id, "invalidated": ok}
 
 
@@ -262,22 +282,23 @@ def research(req: ResearchReq, request: Request) -> dict:
     doc = research_agent.research(req.topic, llm=get_llm(), use_kb=req.use_kb,
                                   use_web=_web_flag(req.use_web), max_sections=req.max_sections,
                                   tenant=tenant)
-    sid = research_session.create(doc)
+    sid = research_session.create(doc, tenant=tenant)
     return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
 
 
 @app.get("/research/{sid}")
-def research_get(sid: str) -> dict:
-    doc = research_session.get(sid)
+def research_get(sid: str, request: Request) -> dict:
+    doc = research_session.get(sid, tenant=_tenant_of(request))
     if doc is None:
         raise HTTPException(status_code=404, detail="session not found")
     return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
 
 
 @app.post("/research/{sid}/refine")
-def research_refine(sid: str, req: RefineReq) -> dict:
+def research_refine(sid: str, req: RefineReq, request: Request) -> dict:
     doc = research_session.refine_section(sid, req.index, llm=get_llm(),
-                                          use_kb=req.use_kb, use_web=_web_flag(req.use_web))
+                                          use_kb=req.use_kb, use_web=_web_flag(req.use_web),
+                                          tenant=_tenant_of(request))
     if doc is None:
         raise HTTPException(status_code=404, detail="session/section not found")
     return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}

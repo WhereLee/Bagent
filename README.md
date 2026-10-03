@@ -40,6 +40,14 @@ data/       corpus/ golden/           # 语料 / 评估集
 tests/  docs/  models/
 ```
 
+## 已知限制与运维约束（诚实列出，非黑盒）
+
+- **进程内状态四处**（BM25 内存索引、检索缓存、令牌桶、research 会话）：**必须单进程部署**（start_app.sh 未加 `--workers`）。加 `--workers N` 会造成这四个状态不一致（缓存/限流/租户视图分叉）。要横向扩展需先把这些外置（Redis/共享存储）。
+- **BM25 规模上限**：打分是 Python 层逐查询词遍历全量 tf，且任一写入即全库重建(含全量 jieba 分词)。万级子块就会开始吃秒级；过阈应切 pg_search/Elasticsearch 作词法腿（接口已抽象）。
+- **HNSW + WHERE 过滤召回退化**：vector_search 把 is_deleted/tenant 写在同一 WHERE；pgvector 默认 `ef_search=40`、`hnsw.iterative_scan=off`，过滤选择率低时会**真少返**（非仅排序）。上量后需在评测集实测，必要时 `SET hnsw.iterative_scan=relaxed_order`/调大 ef_search 或按租户部分索引/分区。集成测试库小看不出。
+- **无迁移工具**：schema 靠幂等 SQL + `ALTER ... IF NOT EXISTS`；**换 embedding 模型需改 `vector(512)` 并全量重建**（维度与模型绑定）。未引 Alembic 是有意的：项目规模下幂等 DDL 足够，上生产多环境时再引。
+- **/ingest 白名单**：仅允许读 `INGEST_ALLOWED_ROOT`(默认 data/)下的文件，防任意路径读取；CLI/脚本入库不受此限（信任本地）。
+
 ## 快速开始
 
 ```powershell
@@ -86,7 +94,7 @@ tests/  docs/  models/
 - **M6 ✅**：生产化 —— 多 LLM provider(DeepSeek 主/MiMo 备)+超时/重试退避/降级、检索结果缓存+自适应早退、API-Key 鉴权、prompt 注入防护。
 - **M7 ✅**：测试与评估纵深 —— CI 新增 **integration job**（真 pgvector 服务容器跑端到端检索/增量回归）、注入对抗测试集、bootstrap 置信区间、RGB 反事实/信息整合子集。
 - **M8 ✅**：Self-RAG 与知识冲突 —— 证据充分性自检 + 不足时改写重检(带上限) + 多源矛盾检测与降级；为接入联网多源预留中枢。
-- **M9a ✅**（进行中）：联网检索层 —— `SearchProvider` 抽象 + **SearXNG(百度系) provider** + trafilatura 抽正文/时效 + **SSRF/注入清洗** + mock provider + 自架部署物料；默认关，结果以 draft 进多源佐证。
+- **M9a ✅**：联网检索层 —— `SearchProvider` 抽象 + **SearXNG provider** + trafilatura 抽正文/时效 + **SSRF/注入清洗** + mock provider + 自架部署物料；默认关，结果以 draft 进多源佐证（实测引擎用 sogou/360，baidu 对机房 IP 弹验证码）。
 - **M9b ✅**：写回记忆 —— **个人/知识双库分离** + **双时态**(valid_at/invalid_at) + **trust 生命周期**(draft→verified→curated，多源佐证促升) + **sleep-time 异步写回**(不阻塞回答) + 检索按 trust 门控。默认关。
 - **M9c ✅**：研究型 Agent —— **多源取证**(KB⊕联网进 self-RAG) + **文档编排**(列提纲→逐节取证成文→行内引用/参考文献/论断表/冲突) + **会话态活文档** `/research` `/research/{id}` `/research/{id}/refine`。
 - **M10(⑥) ✅**：多租户**数据面强制** —— HMAC 签名租户令牌(fail-closed) + 入库盖章 + **检索三路一致过滤**(dense/BM25/缓存) + 记忆按租户隔离 + 跨租户读写越权拦截。

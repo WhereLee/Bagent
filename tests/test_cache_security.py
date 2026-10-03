@@ -3,7 +3,6 @@ import pytest
 
 from app.retrieval.cache import RetrievalCache
 from app.security import (
-    build_tenant_filter,
     constant_time_equal,
     detect_injection,
     sanitize_query,
@@ -87,10 +86,3 @@ def test_constant_time_equal():
     assert constant_time_equal("secret", "secret") is True
     assert constant_time_equal("secret", "wrong") is False
     assert constant_time_equal("", "") is True
-
-
-def test_build_tenant_filter():
-    assert build_tenant_filter(None) == ("", {})
-    sql, params = build_tenant_filter("t1")
-    assert "tenant" in sql
-    assert params == {"tenant": "t1"}

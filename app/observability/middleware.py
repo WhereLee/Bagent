@@ -23,19 +23,23 @@ log = get_logger("http")
 EXEMPT_PATHS = {"/health", "/metrics", "/docs", "/openapi.json", "/redoc"}
 
 
-def client_ip(request: Request) -> str:
-    """优先取反向代理透传的 X-Forwarded-For 第一段。"""
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
+def client_ip(request: Request, trust_proxy: bool = False) -> str:
+    """默认只信直连 peer（防伪造 X-Forwarded-For 绕过限流）；
+    仅当部署确认位于可信反代后才采用 XFF 首段。"""
+    if trust_proxy:
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            return fwd.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 
 class ObservabilityMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, limiter: RateLimiter, api_key: str | None = None) -> None:
+    def __init__(self, app, limiter: RateLimiter, api_key: str | None = None,
+                 trust_proxy: bool = False) -> None:
         super().__init__(app)
         self.limiter = limiter
         self.api_key = api_key
+        self.trust_proxy = trust_proxy
 
     async def dispatch(self, request: Request, call_next):
         rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
@@ -53,7 +57,7 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                 return resp
 
         if self.limiter is not None and path not in EXEMPT_PATHS:
-            allowed, retry_after = self.limiter.allow(client_ip(request))
+            allowed, retry_after = self.limiter.allow(client_ip(request, self.trust_proxy))
             if not allowed:
                 RATE_LIMIT_REJECTED.inc()
                 resp = JSONResponse(

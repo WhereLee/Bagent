@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     # --- Multi-tenant 数据面强制 (⑥) ---
     tenant_enforcement_enabled: bool = False  # 启用则每请求必须带合法签名租户令牌(fail-closed)
     tenant_secret: str = ""                    # 验签共享密钥（与 Java 管理面一致）
+    trust_proxy_headers: bool = False          # 仅在确实位于可信反代后才采信 X-Forwarded-For
+    ingest_allowed_root: str = "data"          # /ingest 只允许读此目录下的文件(防任意文件读取)
 
     # --- Web search / 联网 (M9a) ---
     web_search_enabled: bool = False   # 默认关（不影响现有离线链路/测试）

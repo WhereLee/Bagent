@@ -49,8 +49,9 @@ def cmd_query(text: str, top_k: int | None) -> None:
         f"低置信={ans.low_confidence} 拒答={ans.is_refusal}"
     )
     print("\n=== 来源 ===")
-    for s in ans.sources:
-        print(f"  [{s['id']}] score={s['score']} {s['source']}")
+    for n, s in enumerate(ans.sources, start=1):
+        # n 是答案里的引用编号 [n]；chunk_id=DB 块 id（不等同引用号）
+        print(f"  [{n}] score={s['score']} {s['source']} (chunk_id={s['id']})")
 
 
 def main() -> None:

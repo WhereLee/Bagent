@@ -5,11 +5,11 @@ from app.research.evidence import _dedup_merge, gather_evidence
 from app.retrieval.store import RetrievedChunk
 
 
-def _chunk(i, content, *, stype="kb", trust="curated", url=None):
+def _chunk(i, content, *, stype="kb", trust="curated", url=None, src=None):
     md = {"source_type": stype, "trust": trust}
     if url:
         md["url"] = url
-    return RetrievedChunk(chunk_id=i, document_id=i, source=f"src{i}", content=content,
+    return RetrievedChunk(chunk_id=i, document_id=i, source=src or f"src{i}", content=content,
                           score=1.0, metadata=md, context=content)
 
 
@@ -50,7 +50,8 @@ def test_gather_evidence_bound_and_merge():
 
 
 def test_research_assembly_and_references():
-    kb = lambda q, top_k=None, tenant=None: [_chunk(1, f"{q}-a"), _chunk(2, f"{q}-b")]
+    # 每节用独立 source → 参考文献池按 source 去重后=6；跨节相同 source 会合并
+    kb = lambda q, top_k=None, tenant=None: [_chunk(1, f"{q}-a", src=f"{q}#a"), _chunk(2, f"{q}-b", src=f"{q}#b")]
     doc = agent.research("秦惠文王", llm=_LLM(), use_kb=True, use_web=False,
                          max_sections=3, kb_retrieve=kb)
     assert isinstance(doc, ResearchDoc)
@@ -59,6 +60,14 @@ def test_research_assembly_and_references():
     for s in doc.sections:
         assert all(1 <= i <= len(doc.references) for i in s.cites)
     assert len(doc.claims) == 3
+
+
+def test_research_reference_dedup_across_sections():
+    # 两节共用同一 source 的同一证据 → 参考文献只计一次
+    shared = _chunk(1, "共用证据", src="shared")
+    kb = lambda q, top_k=None, tenant=None: [shared]
+    doc = agent.research("t", llm=_LLM(), use_kb=True, use_web=False, max_sections=2, kb_retrieve=kb)
+    assert len(doc.references) == 1
 
 
 def test_session_create_get_refine():

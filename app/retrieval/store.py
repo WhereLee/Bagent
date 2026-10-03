@@ -68,7 +68,8 @@ def index_document(
     """
     doc_hash = compute_doc_hash(doc_text)
     doc_meta = {"tenant": tenant_id}
-    doc = _active_doc_by_source(session, source)
+    # 按 (source, tenant) 定位活跃文档：跨租户同名 source 不得相互接管/覆盖
+    doc = _active_doc_by_source(session, source, tenant_id)
     action = "created"
 
     if doc is not None:

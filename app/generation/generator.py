@@ -107,10 +107,11 @@ def answer_query(
                       iterations=sr_meta["iterations"])
 
     # 3) 生成（可选强制引用；citation 编号与检索列表 1:1）
-    context = _build_context(chunks, guard=guard)
+    retrieval_context = _build_context(chunks, guard=guard)   # 仅 KB/联网，供忠实度判定
+    context = retrieval_context
     mem_block = _memory_context(rewritten, user_id, tenant)
     if mem_block:
-        context = mem_block + "\n\n---\n\n" + context
+        context = mem_block + "\n\n---\n\n" + context          # 记忆只用于个性化生成，不计入忠实度证据
     system = SYSTEM_CITED if force_citation else SYSTEM_BASE
     try:
         text = get_llm().generate(system=system, user=f"【参考资料】\n{context}\n\n【问题】\n{rewritten}")
@@ -135,7 +136,7 @@ def answer_query(
                  evidence_sufficient=sr_meta.get("sufficient"))
     if check_faith:
         with STAGE_LATENCY.labels(stage="faithfulness").time():
-            report = assess_faithfulness(context, text, get_llm(), threshold=s.faithfulness_threshold)
+            report = assess_faithfulness(retrieval_context, text, get_llm(), threshold=s.faithfulness_threshold)
         ans.faithfulness = report["faithfulness"]
         ans.hallucination_rate = report.get("hallucination_rate")
         ans.grounded = report["grounded"]

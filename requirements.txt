@@ -27,9 +27,6 @@ python-docx>=1.1,<2
 beautifulsoup4>=4.12,<5
 lxml>=5.3,<6
 
-# ---- Token counting (chunk sizing) ----
-tiktoken>=0.8,<1
-
 # ---- Observability ----
 prometheus-client>=0.20,<0.22
 
