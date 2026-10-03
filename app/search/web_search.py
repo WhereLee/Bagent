@@ -14,7 +14,8 @@ from app.observability.metrics import WEB_SEARCH
 from app.retrieval.store import RetrievedChunk
 from app.search.clean import clean_web_text, is_safe_url
 from app.search.extract import extract
-from app.search.factory import get_search_provider
+from app.search.factory import get_fallback_provider, get_search_provider
+from app.search.base import SearchResult
 
 _log = get_logger("search")
 
@@ -32,20 +33,7 @@ def _throttle() -> None:
         _last_call = time.monotonic()
 
 
-def web_search(query: str, max_results: int | None = None) -> list[RetrievedChunk]:
-    s = get_settings()
-    if not s.web_search_enabled:
-        return []
-    provider = get_search_provider()
-    k = max_results or s.web_search_max_results
-    _throttle()
-    try:
-        results = provider.search(query, max_results=k)
-    except Exception as e:  # noqa: BLE001
-        WEB_SEARCH.labels(provider=provider.name, outcome="error").inc()
-        log_event(_log, "warning", "web_search_error", err=str(e)[:160])
-        return []
-
+def _to_chunks(results: list[SearchResult], s) -> list[RetrievedChunk]:
     chunks: list[RetrievedChunk] = []
     for i, r in enumerate(results):
         if not is_safe_url(r.url):
@@ -66,6 +54,34 @@ def web_search(query: str, max_results: int | None = None) -> list[RetrievedChun
                       "trust": "draft", "engine": r.engine, "title": r.title},
             context=safe,
         ))
+    return chunks
+
+
+def _search_once(provider, query: str, k: int, s) -> list[RetrievedChunk]:
+    _throttle()
+    try:
+        results = provider.search(query, max_results=k)
+    except Exception as e:  # noqa: BLE001
+        WEB_SEARCH.labels(provider=provider.name, outcome="error").inc()
+        log_event(_log, "warning", "web_search_error", provider=provider.name, err=str(e)[:160])
+        return []
+    chunks = _to_chunks(results, s)
     WEB_SEARCH.labels(provider=provider.name, outcome="ok" if chunks else "empty").inc()
-    log_event(_log, "info", "web_search", provider=provider.name, q=query[:60], n_results=len(results), n_kept=len(chunks))
+    log_event(_log, "info", "web_search", provider=provider.name, q=query[:60],
+              n_results=len(results), n_kept=len(chunks))
+    return chunks
+
+
+def web_search(query: str, max_results: int | None = None) -> list[RetrievedChunk]:
+    """联网取证：主源为空/报错且配了 search_fallback 则降级（仍走同一 SSRF/清洗；成本受控、非主 LLM 自决）。"""
+    s = get_settings()
+    if not s.web_search_enabled:
+        return []
+    k = max_results or s.web_search_max_results
+    chunks = _search_once(get_search_provider(), query, k, s)
+    if not chunks:
+        fb = get_fallback_provider()
+        if fb is not None:
+            log_event(_log, "info", "web_search_fallback", to=fb.name)
+            chunks = _search_once(fb, query, k, s)
     return chunks

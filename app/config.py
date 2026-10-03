@@ -118,7 +118,9 @@ class Settings(BaseSettings):
 
     # --- Web search / 联网 (M9a) ---
     web_search_enabled: bool = False   # 默认关（不影响现有离线链路/测试）
-    search_provider: str = "mock"      # mock | searxng
+    search_provider: str = "mock"      # mock | searxng | mimo
+    search_fallback: str = ""          # 主源空/报错时降级到的源（如 mimo）；置空则不降级
+    mimo_max_keyword: int = 3          # MiMo 联网插件检索关键词数
     searxng_base_url: str = "http://127.0.0.1:8080"
     searxng_engines: str = "sogou,360search"  # 逗号分隔；国内机房 IP 下 baidu 常弹 CAPTCHA
     search_timeout: float = 8.0

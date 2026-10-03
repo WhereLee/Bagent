@@ -98,6 +98,8 @@ tests/  docs/  models/
 - **M9b ✅**：写回记忆 —— **个人/知识双库分离** + **双时态**(valid_at/invalid_at) + **trust 生命周期**(draft→verified→curated，多源佐证促升) + **sleep-time 异步写回**(不阻塞回答) + 检索按 trust 门控。默认关。
 - **M9c ✅**：研究型 Agent —— **多源取证**(KB⊕联网进 self-RAG) + **文档编排**(列提纲→逐节取证成文→行内引用/参考文献/论断表/冲突) + **会话态活文档** `/research` `/research/{id}` `/research/{id}/refine`。
 - **M10(⑥) ✅**：多租户**数据面强制** —— HMAC 签名租户令牌(fail-closed) + 入库盖章 + **检索三路一致过滤**(dense/BM25/缓存) + 记忆按租户隔离 + 跨租户读写越权拦截。
+- **M11(P0) ✅**：写回记忆**抗污染端到端 A/B**（三臂+合谋泄漏+四类判定+双场景）；修复 knowledge 记忆只写不读缺口。证据：naive 83%→门控 0%→合谋泄漏 50%（已知边界）。
+- **M11(P1) ✅**：MiMo 受控联网检索源（主源空/错时**配置降级**，非主 LLM 自决）+ **共享工具注册表 `app/tools.py`** + **MCP server**（能力对外可接）。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
@@ -157,6 +159,12 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 - **注入对抗测试**：`tests/test_injection_adversarial.py` 用一批真实 payload 验证“防护真拦得住”（含发现并补全了 `new instructions:` 漏网模式）。
 - **bootstrap 置信区间**：`app/evaluation/stats.py` + `eval_benchmark` 输出“均值±95%CI”，不再报单点。实测 dense recall@10 0.859±0.099 vs hybrid 0.889±0.065。
 - **RGB 子集**：`eval_rgb.py` 扩展 counterfactual/integration。**诚实发现**：反事实集上“只信上下文”的严格 grounding 会被**错误文档 100% 带偏**（复述谬误）——纯 RAG 的固有软肋，也是为何需要自检式/多源佐证检索（③）。
+
+## 受控联网与 MCP（P1）
+
+- **联网两条受控路径**：`SEARCH_PROVIDER=searxng`（自架、零 token、主用）；`MiMoWebProvider`（MiMo 联网插件，**按次计费、由 `SEARCH_FALLBACK` 在主源空/错时降级触发**）。**硬约束：主生成 LLM（DeepSeek/MiMo）绝不挂 `web_search`**——按量模型联网会几乎必然 cache-miss 导致成本暴涨；联网只走上述两条检索调用。`WEB_SEARCH` 指标按 provider 计量。
+- **共享工具注册表** `app/tools.py`：`kb_search/kb_answer/web_search/research/memory_search` 包成 JSON 安好的工具，MCP 与未来 agent 循环**复用同一套实现**。
+- **MCP server** `app/mcp_server.py`（`python -m app.mcp_server`）：把上述工具暴露为 MCP，Claude/Cursor 可接入。**依赖与 fastapi 的 starlette 版本互斥 → 用 `requirements-mcp.txt` 单独 venv 跑**。
 
 ## 写回记忆（M9b）
 

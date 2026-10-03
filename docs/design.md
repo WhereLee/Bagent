@@ -193,3 +193,8 @@ Reranker 增 OnnxReranker 后端（同 .rerank 接口，喂 input_ids/attention_
 关键发现1(设计缺陷自我纠正)：只测 conflict(KB 有真相)会得到"污染恒 0%"的**无区分度**结果——因为真相当场、错误值翻不了车；真正的风险在 **kb_silent**(库无该事实、写回记忆是唯一来源)，naive 83.3%±20.8 污染 → 门控 0%(安全拒答) → 合谋促升 50% 泄漏。
 关键发现2(真缺口)：knowledge 记忆此前只写不读，/query 仅召回 personal → "防污染门控"守的是空路径；已修：_memory_context 同时按 trust 召回 personal+knowledge。
 边界(不粉饰)：多源佐证≠真相，两个都错且一致会被促升绕过门控(50%)→ 需来源真实性/多样性、促升人工确认。
+
+## 22. P1 受控联网(MiMo) + 共享工具/MCP
+成本护栏(用户明确)：主生成 LLM(DeepSeek/MiMo) 绝不挂 web_search——按量模型联网几乎必然 cache-miss→成本暴涨。联网只两条受控检索路径：SearxNG(自架/零token/主用) + MiMoWebProvider(MiMo联网插件, 按次计费, 由 SEARCH_FALLBACK 在主源空/错时降级; 独立检索调用非主模型自决)。MiMo 返回取 url_citation annotations + 正文链接兜底归一 SearchResult→既有 SSRF/清洗。WEB_SEARCH 指标按 provider 计量。
+共享工具注册表 app/tools.py(kb_search/kb_answer/web_search/research/memory_search)：MCP server 与未来 agent 循环复用同一实现。app/mcp_server.py 用 FastMCP 绑定 TOOLS。
+依赖教训(实测)：mcp 的 sse-starlette 要 starlette>=0.49，fastapi 锁 starlette<0.47 → 二者同 venv 冲突 → MCP server 必须独立 venv(requirements-mcp.txt)，web 应用 venv 不装 mcp。test_tools 用 importorskip 保证 app 环境不装 mcp 也绿。

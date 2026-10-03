@@ -84,3 +84,63 @@ def test_web_search_disabled_returns_empty(monkeypatch):
     s.web_search_enabled = False
     monkeypatch.setattr(ws, "get_settings", lambda: s)
     assert ws.web_search("任意") == []
+
+
+# ---- MiMo 受控联网检索源 ----
+from app.search.mimo import MiMoWebProvider  # noqa: E402
+
+
+def test_mimo_parse_annotations():
+    data = {"choices": [{"message": {"content": "...", "annotations": [
+        {"type": "url_citation", "url_citation": {"url": "https://a.com/x", "title": "标题A"}},
+        {"url": "https://b.com/y", "snippet": "平铺写法"},
+    ]}}]}
+    res = MiMoWebProvider._parse(data, 5)
+    assert {r.url for r in res} == {"https://a.com/x", "https://b.com/y"}
+    assert any(r.title == "标题A" for r in res)
+
+
+def test_mimo_content_url_fallback_when_no_annotations():
+    data = {"choices": [{"message": {"content": "来源一 https://c.com/z 说明\n来源二 https://d.com/w", "annotations": []}}]}
+    res = MiMoWebProvider._parse(data, 5)
+    assert {r.url for r in res} == {"https://c.com/z", "https://d.com/w"}
+
+
+class _FakePost:
+    def __init__(self, payload): self.payload = payload; self.calls = []
+    def post(self, url, json=None):
+        self.calls.append(json)
+        payload = self.payload
+        class R:
+            def raise_for_status(self): pass
+            def json(self): return payload
+        return R()
+
+
+def test_mimo_search_sends_web_search_tool_and_apikey_header():
+    client = _FakePost({"choices": [{"message": {"content": "x https://e.com/1", "annotations": []}}]})
+    p = MiMoWebProvider("https://api.x/v1", "sk-test", "mimo-v2.6-flash", client=client)
+    out = p.search("q", max_results=3)
+    assert out and out[0].url == "https://e.com/1"
+    assert client.calls[0]["tools"][0]["type"] == "web_search"   # 检索调用带联网工具
+
+
+def test_web_search_falls_back_when_primary_empty(monkeypatch):
+    # 主源返回空 → 配了 search_fallback 则走降级源
+    s = _fake_settings()
+    monkeypatch.setattr(ws, "get_settings", lambda: s)
+    monkeypatch.setattr(ws, "is_safe_url", lambda u, **k: True)
+
+    class Empty:
+        name = "searxng"
+        def search(self, q, max_results=5): return []
+
+    class Hit:
+        name = "mimo"
+        def search(self, q, max_results=5): return [SearchResult("t", "https://fb/1", "摘要")]
+
+    monkeypatch.setattr(ws, "get_search_provider", lambda: Empty())
+    monkeypatch.setattr(ws, "get_fallback_provider", lambda: Hit())
+    s.web_fetch_fulltext = False
+    chunks = ws.web_search("q")
+    assert chunks and chunks[0].metadata["url"] == "https://fb/1"
