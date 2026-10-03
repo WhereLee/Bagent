@@ -33,7 +33,7 @@ def _context(chunks: list[RetrievedChunk]) -> str:
 def gather_evidence(
     query: str, *, use_kb: bool = True, use_web: bool = False,
     top_k: int | None = None, max_iters: int = 2, llm,
-    kb_retrieve=None, web_retrieve=None,
+    kb_retrieve=None, web_retrieve=None, tenant: str | None = None,
 ) -> tuple[list[RetrievedChunk], dict]:
     """返回 (去重后的证据块, meta)。meta: iterations/queries/sufficient/sources。"""
     if kb_retrieve is None:
@@ -48,7 +48,7 @@ def gather_evidence(
     for it in range(max(1, max_iters)):
         cur: list[RetrievedChunk] = []
         if use_kb:
-            cur = _dedup_merge(cur, kb_retrieve(q, top_k=top_k))
+            cur = _dedup_merge(cur, kb_retrieve(q, top_k=top_k, tenant=tenant))
         if use_web and web_retrieve is not None:
             cur = _dedup_merge(cur, web_retrieve(q))
         chunks = _dedup_merge(chunks, cur)

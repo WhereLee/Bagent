@@ -5,7 +5,7 @@ import hashlib
 from dataclasses import dataclass
 
 import numpy as np
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import Text, delete, func, select, text
 from sqlalchemy.orm import Session
 
 from app.db.models import Chunk, Document
@@ -32,16 +32,17 @@ class RetrievedChunk:
             self.context = self.content
 
 
-def _active_doc_by_source(session: Session, source: str) -> Document | None:
-    return session.scalar(
-        select(Document).where(Document.source == source, Document.is_deleted == False)  # noqa: E712
-    )
+def _active_doc_by_source(session: Session, source: str, tenant: str | None = None) -> Document | None:
+    q = select(Document).where(Document.source == source, Document.is_deleted == False)  # noqa: E712
+    if tenant is not None:
+        q = q.where(func.cast(Document.metadata_["tenant"], Text) == tenant)
+    return session.scalar(q)
 
 
-def delete_document(session: Session, source: str) -> bool:
-    """按 source 软删除文档。旧块仍在表中但被 is_deleted 过滤，检索不再召回；
-    同时 bump updated_at，令 BM25 generation 变化以重建词法索引。"""
-    doc = _active_doc_by_source(session, source)
+def delete_document(session: Session, source: str, tenant: str | None = None) -> bool:
+    """按 source 软删除文档（tenant 非空则只能删本租户的）。旧块仍在表中但被 is_deleted 过滤，
+    检索不再召回；同时 bump updated_at，令 BM25 generation 变化以重建词法索引。"""
+    doc = _active_doc_by_source(session, source, tenant)
     if not doc:
         return False
     doc.is_deleted = True
@@ -56,6 +57,7 @@ def index_document(
     media_type: str,
     parents: list[ParentChunk],
     child_vectors: np.ndarray,
+    tenant_id: str | None = None,
 ) -> tuple[int, int, str]:
     """按 source 做 upsert 的索引写入（增量更新/重建链路）。
 
@@ -65,6 +67,7 @@ def index_document(
     返回 (document_id, 写入子块数, action)。
     """
     doc_hash = compute_doc_hash(doc_text)
+    doc_meta = {"tenant": tenant_id}
     doc = _active_doc_by_source(session, source)
     action = "created"
 
@@ -74,10 +77,11 @@ def index_document(
         # 内容变更：物理删旧块（活跃子块数随之变化 -> 触发词法重建）
         session.execute(delete(Chunk).where(Chunk.document_id == doc.id))
         doc.media_type = media_type
+        doc.metadata_ = doc_meta
         doc.updated_at = func.now()
         action = "updated"
     else:
-        doc = Document(source=source, doc_hash=doc_hash, media_type=media_type, metadata_={})
+        doc = Document(source=source, doc_hash=doc_hash, media_type=media_type, metadata_=doc_meta)
         session.add(doc)
     session.flush()
     doc.doc_hash = doc_hash
@@ -92,7 +96,7 @@ def index_document(
             content=parent.text,
             token_count=parent.token_count,
             embedding=None,
-            metadata_={"role": "parent"},
+            metadata_={"role": "parent", "tenant": tenant_id},
         )
         session.add(parent_row)
         session.flush()  # 取 parent_row.id
@@ -106,7 +110,7 @@ def index_document(
                     content=child.text,
                     token_count=child.token_count,
                     embedding=child_vectors[vi].tolist() if child_vectors.size else None,
-                    metadata_={"role": "child"},
+                    metadata_={"role": "child", "tenant": tenant_id},
                 )
             )
             vi += 1
@@ -115,8 +119,11 @@ def index_document(
     return doc.id, n_children, action
 
 
-def vector_search(session: Session, query_vec: np.ndarray, top_k: int) -> list[RetrievedChunk]:
-    """稠密 TopK（只检索有向量的子块）。cosine 距离，score = 1 - distance。"""
+def vector_search(session: Session, query_vec: np.ndarray, top_k: int,
+                  tenant: str | None = None) -> list[RetrievedChunk]:
+    """稠密 TopK（只检索有向量的子块）。cosine 距离，score = 1 - distance。
+
+    tenant 非空则仅召回该租户文档（数据面强制，与 lexical/缓存三路一致）。"""
     vec_literal = "[" + ",".join(f"{x:.6f}" for x in query_vec) + "]"
     sql = text(
         """
@@ -125,11 +132,12 @@ def vector_search(session: Session, query_vec: np.ndarray, top_k: int) -> list[R
         FROM chunks c
         JOIN documents d ON d.id = c.document_id
         WHERE d.is_deleted = FALSE AND c.embedding IS NOT NULL
+          AND (CAST(:tenant AS text) IS NULL OR d.metadata->>'tenant' = :tenant)
         ORDER BY c.embedding <=> CAST(:q AS vector)
         LIMIT :k
         """
     )
-    rows = session.execute(sql, {"q": vec_literal, "k": top_k}).mappings().all()
+    rows = session.execute(sql, {"q": vec_literal, "k": top_k, "tenant": tenant}).mappings().all()
     return [
         RetrievedChunk(
             chunk_id=r["id"], document_id=r["document_id"], source=r["source"],

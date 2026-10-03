@@ -44,6 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
 CREATE TABLE IF NOT EXISTS memories (
     id            BIGSERIAL PRIMARY KEY,
     scope         TEXT        NOT NULL,          -- personal | knowledge
+    tenant_id     TEXT,                          -- ⑥ 租户隔离（数据面强制）
     owner_user_id TEXT,                          -- personal 必填；knowledge 为 NULL
     kind          TEXT        NOT NULL DEFAULT 'fact',  -- fact/preference/entity/claim
     content       TEXT        NOT NULL,
@@ -65,3 +66,6 @@ CREATE INDEX IF NOT EXISTS idx_memories_scope_owner ON memories(scope, owner_use
 CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(content_hash);
 CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw
     ON memories USING hnsw (embedding vector_cosine_ops);
+
+-- 幂等：为已存在的 memories 表补上 tenant_id（⑥ 增量）
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id TEXT;

@@ -179,3 +179,11 @@ Reranker 增 OnnxReranker 后端（同 .rerank 接口，喂 input_ids/attention_
 读循环之上长出编排层：POST /research → plan_outline(LLM) → 逐节 gather_evidence(KB⊕web, self-RAG 充分性反思, 去重) → 成文(行内[n]) → 全局参考文献编号重映射(local→global, 内容去重共享) → 论断表(按节引用+最低trust) → 冲突(复用 M8 detect_conflict)。有界 max_sections/max_iters，空证据节显式标注不编造。
 会话态 session.py：进程内活文档 dict + 锁；/research/{id}/refine 重做某节回填引用。持久化 DB 属后续。
 交付物 schema(doc.py)：ResearchDoc{topic/outline/sections/claims/references/conflicts} + to_markdown。联网结果作为 draft 源进入，由 M9b 的 trust 生命周期管住是否可作答复。
+
+## 20. ⑥ 多租户数据面强制
+按"管理面(Java)/数据面(Python)"拆分，本仓只做数据面强制（不可外包网关：dense/BM25/缓存需原子一致过滤，网关看不到块级归属）。
+- 信任根 app/tenant.py：HMAC 签名租户令牌 	enant|sig，verify 失败/缺失 fail-closed(403)；不启用则不过滤（兼容单租户，默认）。端点经 X-Tenant header → resolve_tenant。
+- 入库盖章：index_document 把 tenant 写进 document/chunk 的 metadata JSONB（不改表结构）。
+- 三路一致：vector_search(d.metadata->>'tenant')、BM25(内存索引存 tenant 列表+search 过滤)、缓存 key 含 tenant。delete_document 带 tenant 只能删本租户。
+- 记忆：memories.tenant_id 列(幂等 ALTER)；add/search/find_similar/list 全按 tenant 分域去重与过滤。
+测试：146 单测(含 TestClient fail-closed 403) + 9 集成(跨租户 dense/hybrid 不召回对方、跨租户删除拒绝)。默认 TENANT_ENFORCEMENT_ENABLED=false 不改现有行为。

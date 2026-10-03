@@ -44,7 +44,7 @@ def _remap_cites(body: str, local_to_global: dict[int, int]) -> str:
 def research(
     topic: str, *, llm, use_kb: bool = True, use_web: bool = False,
     max_sections: int = 5, max_iters: int = 2, check_conflict: bool = True,
-    kb_retrieve=None, web_retrieve=None,
+    kb_retrieve=None, web_retrieve=None, tenant: str | None = None,
 ) -> ResearchDoc:
     outline = plan_outline(topic, llm, max_sections)
     doc = ResearchDoc(topic=topic, outline=list(outline))
@@ -54,7 +54,8 @@ def research(
     for title in outline:
         chunks, meta = gather_evidence(title, use_kb=use_kb, use_web=use_web,
                                        max_iters=max_iters, llm=llm,
-                                       kb_retrieve=kb_retrieve, web_retrieve=web_retrieve)
+                                       kb_retrieve=kb_retrieve, web_retrieve=web_retrieve,
+                                       tenant=tenant)
         if not chunks:
             doc.sections.append(Section(title=title, body="（未采集到证据）", cites=[]))
             continue

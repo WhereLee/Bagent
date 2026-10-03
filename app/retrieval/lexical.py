@@ -47,16 +47,19 @@ class BM25Index:
         self.k1 = k1
         self.b = b
         self.doc_ids: list[int] = []
+        self.doc_tenant: list[str | None] = []
         self.tf: list[Counter] = []
         self.doc_len: list[int] = []
         self.df: dict[str, int] = {}
         self.avgdl: float = 0.0
         self.n: int = 0
 
-    def build(self, docs: list[tuple[int, list[str]]]) -> None:
-        self.doc_ids = [d for d, _ in docs]
-        self.tf = [Counter(toks) for _, toks in docs]
-        self.doc_len = [len(toks) for _, toks in docs]
+    def build(self, docs: list[tuple]) -> None:
+        # 兼容 (id, toks) 与 (id, toks, tenant)；tenant 缺省为 None
+        self.doc_ids = [d[0] for d in docs]
+        self.doc_tenant = [d[2] if len(d) > 2 else None for d in docs]
+        self.tf = [Counter(d[1]) for d in docs]
+        self.doc_len = [len(d[1]) for d in docs]
         df: dict[str, int] = defaultdict(int)
         for tf in self.tf:
             for term in tf:
@@ -70,7 +73,7 @@ class BM25Index:
         # BM25+ 风格保证 IDF 恒正
         return math.log(1 + (self.n - df + 0.5) / (df + 0.5))
 
-    def search(self, query_tokens: list[str], top_k: int) -> list[tuple[int, float]]:
+    def search(self, query_tokens: list[str], top_k: int, tenant: str | None = None) -> list[tuple[int, float]]:
         if self.n == 0 or not query_tokens:
             return []
         scores = [0.0] * self.n
@@ -83,7 +86,16 @@ class BM25Index:
                 norm = self.k1 * (1 - self.b + self.b * self.doc_len[i] / self.avgdl)
                 scores[i] += idf * (f * (self.k1 + 1)) / (f + norm)
         order = sorted(range(self.n), key=lambda i: scores[i], reverse=True)
-        return [(self.doc_ids[i], scores[i]) for i in order[:top_k] if scores[i] > 0]
+        out: list[tuple[int, float]] = []
+        for i in order:
+            if scores[i] <= 0:
+                break
+            if tenant is not None and self.doc_tenant[i] != tenant:
+                continue
+            out.append((self.doc_ids[i], scores[i]))
+            if len(out) >= top_k:
+                break
+        return out
 
 
 class LexicalRetriever:
@@ -119,20 +131,20 @@ class LexicalRetriever:
                 return
             # 只把未软删文档的子块纳入 BM25 索引（修复：旧版会召回已删文档）
             rows = session.execute(
-                select(Chunk.id, Chunk.content)
+                select(Chunk.id, Chunk.content, Document.metadata_)
                 .join(Document, Document.id == Chunk.document_id)
                 .where(Chunk.embedding.isnot(None), Document.is_deleted == False)  # noqa: E712
             ).all()
-            docs = [(r.id, tokenize(r.content)) for r in rows]
+            docs = [(r.id, tokenize(r.content), (r.metadata_ or {}).get("tenant")) for r in rows]
             self._index.build(docs)
             self._generation = gen
             log_event(_log, "info", "bm25_rebuild", n_docs=self._index.n, generation=str(gen))
 
-    def search(self, query: str, top_k: int) -> list[tuple[int, float]]:
+    def search(self, query: str, top_k: int, tenant: str | None = None) -> list[tuple[int, float]]:
         session = get_session()
         try:
             self._ensure_index(session)
-            return self._index.search(tokenize(query), top_k)
+            return self._index.search(tokenize(query), top_k, tenant)
         finally:
             session.close()
 

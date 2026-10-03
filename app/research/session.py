@@ -37,7 +37,7 @@ def clear() -> None:
 
 def refine_section(
     sid: str, index: int, *, llm, use_kb: bool = True, use_web: bool = False,
-    max_iters: int = 2, kb_retrieve=None, web_retrieve=None,
+    max_iters: int = 2, kb_retrieve=None, web_retrieve=None, tenant: str | None = None,
 ) -> ResearchDoc | None:
     """重做第 index 节：重新取证并生成，回填全局引用编号。"""
     doc = get(sid)
@@ -46,7 +46,8 @@ def refine_section(
     title = doc.sections[index].title
     chunks, _ = gather_evidence(title, use_kb=use_kb, use_web=use_web,
                                 max_iters=max_iters, llm=llm,
-                                kb_retrieve=kb_retrieve, web_retrieve=web_retrieve)
+                                kb_retrieve=kb_retrieve, web_retrieve=web_retrieve,
+                                tenant=tenant)
     if not chunks:
         return doc
     refkey = {r.source: r.id for r in doc.references}

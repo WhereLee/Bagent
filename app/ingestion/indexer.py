@@ -27,7 +27,7 @@ class IngestResult:
     action: str  # created / updated / skipped
 
 
-def ingest_file(path: str | Path) -> IngestResult:
+def ingest_file(path: str | Path, tenant: str | None = None) -> IngestResult:
     source = str(path)
     text, media_type = parse_file(path)
     if not text.strip():
@@ -52,7 +52,7 @@ def ingest_file(path: str | Path) -> IngestResult:
     session = get_session()
     try:
         doc_id, n_children, action = index_document(
-            session, source, text, media_type, parents, vectors
+            session, source, text, media_type, parents, vectors, tenant_id=tenant
         )
         session.commit()
     except Exception:

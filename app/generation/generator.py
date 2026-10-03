@@ -50,7 +50,7 @@ def _build_context(chunks: list[RetrievedChunk], guard: bool = False) -> str:
     return "\n\n---\n\n".join(blocks)
 
 
-def _memory_context(query: str, user_id: str | None) -> str:
+def _memory_context(query: str, user_id: str | None, tenant: str | None = None) -> str:
     """取个人记忆（trust 门控+双时态）作为个性化上下文块；无则空。"""
     s = get_settings()
     if not (s.memory_enabled and user_id):
@@ -63,7 +63,7 @@ def _memory_context(query: str, user_id: str | None) -> str:
     try:
         vec = get_embedder().encode_query(query)
         mems = search_memories(session, vec, scope="personal", owner_user_id=user_id,
-                               min_trust=s.memory_min_trust_for_answer, k=s.memory_context_k)
+                               tenant=tenant, min_trust=s.memory_min_trust_for_answer, k=s.memory_context_k)
     finally:
         session.close()
     if not mems:
@@ -79,6 +79,7 @@ def answer_query(
     check_faithfulness: bool | None = None,
     self_rag: bool | None = None,
     user_id: str | None = None,
+    tenant: str | None = None,
 ) -> Answer:
     s = get_settings()
     force_citation = s.force_citation if force_citation is None else force_citation
@@ -96,10 +97,10 @@ def answer_query(
     sr_meta = {"iterations": 1, "queries": [rewritten], "sufficient": None}
     if use_self_rag:
         chunks, sr_meta = retrieve_with_reflection(
-            rewritten, top_k=top_k, max_iters=s.self_rag_max_iters, llm=get_llm()
+            rewritten, top_k=top_k, max_iters=s.self_rag_max_iters, llm=get_llm(), tenant=tenant
         )
     else:
-        chunks = retrieve(rewritten, top_k=top_k)
+        chunks = retrieve(rewritten, top_k=top_k, tenant=tenant)
     if not chunks:
         return Answer(query=query, rewritten_query=rewritten, text=REFUSAL_MSG,
                       sources=[], is_refusal=True, self_rag_applied=use_self_rag,
@@ -107,7 +108,7 @@ def answer_query(
 
     # 3) 生成（可选强制引用；citation 编号与检索列表 1:1）
     context = _build_context(chunks, guard=guard)
-    mem_block = _memory_context(rewritten, user_id)
+    mem_block = _memory_context(rewritten, user_id, tenant)
     if mem_block:
         context = mem_block + "\n\n---\n\n" + context
     system = SYSTEM_CITED if force_citation else SYSTEM_BASE

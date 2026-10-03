@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from starlette.responses import Response
 
@@ -14,6 +14,7 @@ from app.generation.llm import get_llm
 from app.ingestion.embedder import get_embedder
 from app.ingestion.indexer import ingest_file
 from app.db.session import get_session
+from app.tenant import TenantError, resolve_tenant
 from app.memory.store import invalidate as mem_invalidate
 from app.memory.store import list_memories, set_trust
 from app.memory.writeback import run_writeback
@@ -97,9 +98,10 @@ def metrics() -> Response:
 
 
 @app.post("/ingest")
-def ingest(req: IngestReq) -> dict:
+def ingest(req: IngestReq, request: Request) -> dict:
+    tenant = _tenant_of(request)
     try:
-        result = ingest_file(req.path)
+        result = ingest_file(req.path, tenant=tenant)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:  # noqa: BLE001
@@ -108,9 +110,9 @@ def ingest(req: IngestReq) -> dict:
 
 
 @app.post("/search")
-def search(req: SearchReq) -> dict:
-    """检索预览：走与 /query 相同的 retrieve()（hybrid+RRF+rerank+父扩展），保证口径一致。"""
-    hits = retrieve(req.query, top_k=req.top_k)
+def search(req: SearchReq, request: Request) -> dict:
+    """检索预览：走与 /query 相同的 retrieve()（hybrid+RRF+rerank+父扩展），按租户过滤。"""
+    hits = retrieve(req.query, top_k=req.top_k, tenant=_tenant_of(request))
     return {
         "query": req.query,
         "hits": [asdict(h) for h in hits],
@@ -118,10 +120,11 @@ def search(req: SearchReq) -> dict:
 
 
 @app.post("/delete")
-def delete_doc(req: DeleteReq) -> dict:
+def delete_doc(req: DeleteReq, request: Request) -> dict:
+    tenant = _tenant_of(request)
     session = get_session()
     try:
-        ok = delete_document(session, req.source)
+        ok = delete_document(session, req.source, tenant=tenant)
         session.commit()
     except Exception:
         session.rollback()
@@ -134,31 +137,34 @@ def delete_doc(req: DeleteReq) -> dict:
 
 
 @app.post("/query")
-def query(req: QueryReq, background: BackgroundTasks) -> dict:
-    answer = answer_query(req.query, top_k=req.top_k, self_rag=req.self_rag, user_id=req.user_id)
-    _schedule_writeback(background, req.user_id, req.query, answer.text)
+def query(req: QueryReq, request: Request, background: BackgroundTasks) -> dict:
+    tenant = _tenant_of(request)
+    answer = answer_query(req.query, top_k=req.top_k, self_rag=req.self_rag,
+                          user_id=req.user_id, tenant=tenant)
+    _schedule_writeback(background, req.user_id, req.query, answer.text, tenant)
     return asdict(answer)
 
 
 @app.post("/chat")
-def chat(req: ChatReq, background: BackgroundTasks) -> dict:
+def chat(req: ChatReq, request: Request, background: BackgroundTasks) -> dict:
     """多轮问答：带上历史，服务端做查询改写后检索生成。"""
+    tenant = _tenant_of(request)
     answer = answer_query(req.query, top_k=req.top_k, history=req.history,
-                          self_rag=req.self_rag, user_id=req.user_id)
-    _schedule_writeback(background, req.user_id, req.query, answer.text)
+                          self_rag=req.self_rag, user_id=req.user_id, tenant=tenant)
+    _schedule_writeback(background, req.user_id, req.query, answer.text, tenant)
     return asdict(answer)
 
 
 _log_api = get_logger("api")
 
 
-def _schedule_writeback(background: BackgroundTasks, user_id, query, answer_text) -> None:
+def _schedule_writeback(background: BackgroundTasks, user_id, query, answer_text, tenant=None) -> None:
     if not (get_settings().memory_enabled and user_id):
         return
-    background.add_task(_do_writeback, user_id, query, answer_text)
+    background.add_task(_do_writeback, user_id, query, answer_text, tenant)
 
 
-def _do_writeback(user_id: str, query: str, answer_text: str) -> None:
+def _do_writeback(user_id: str, query: str, answer_text: str, tenant: str | None = None) -> None:
     """sleep-time：回答之后后台写回，失败不影响已返回的响应。"""
     s = get_settings()
     session = get_session()
@@ -166,7 +172,8 @@ def _do_writeback(user_id: str, query: str, answer_text: str) -> None:
         conv = f"用户：{query}\n助手：{answer_text}"
         run_writeback(session=session, conversation=conv, user_id=user_id,
                       llm=get_llm(), embedder=get_embedder(),
-                      dedup_sim=s.memory_dedup_sim, promote_threshold=s.memory_promote_support)
+                      dedup_sim=s.memory_dedup_sim, promote_threshold=s.memory_promote_support,
+                      tenant=tenant)
     except Exception as e:  # noqa: BLE001
         session.rollback()
         _log_api.warning("writeback_failed", err=str(e)[:160])
@@ -184,10 +191,11 @@ class MemoryInvalidateReq(BaseModel):
 
 
 @app.get("/memory")
-def memory_list(scope: str | None = None, user_id: str | None = None, limit: int = 50) -> dict:
+def memory_list(request: Request, scope: str | None = None, user_id: str | None = None, limit: int = 50) -> dict:
+    tenant = _tenant_of(request)
     session = get_session()
     try:
-        rows = list_memories(session, scope=scope, owner_user_id=user_id, limit=limit)
+        rows = list_memories(session, scope=scope, owner_user_id=user_id, tenant=tenant, limit=limit)
         return {"count": len(rows), "memories": [
             {"id": m.id, "scope": m.scope, "owner": m.owner_user_id, "kind": m.kind,
              "content": m.content, "trust": m.trust, "support": m.support,
@@ -240,10 +248,20 @@ def _web_flag(use_web) -> bool:
     return get_settings().web_search_enabled if use_web is None else bool(use_web)
 
 
+def _tenant_of(request: Request) -> str | None:
+    """从签名令牌解析当前租户；未启用强制时返回 None（单租户，不过滤）。"""
+    try:
+        return resolve_tenant(request.headers.get("X-Tenant"))
+    except TenantError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+
+
 @app.post("/research")
-def research(req: ResearchReq) -> dict:
+def research(req: ResearchReq, request: Request) -> dict:
+    tenant = _tenant_of(request)
     doc = research_agent.research(req.topic, llm=get_llm(), use_kb=req.use_kb,
-                                  use_web=_web_flag(req.use_web), max_sections=req.max_sections)
+                                  use_web=_web_flag(req.use_web), max_sections=req.max_sections,
+                                  tenant=tenant)
     sid = research_session.create(doc)
     return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
 

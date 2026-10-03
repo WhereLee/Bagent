@@ -89,6 +89,7 @@ tests/  docs/  models/
 - **M9a ✅**（进行中）：联网检索层 —— `SearchProvider` 抽象 + **SearXNG(百度系) provider** + trafilatura 抽正文/时效 + **SSRF/注入清洗** + mock provider + 自架部署物料；默认关，结果以 draft 进多源佐证。
 - **M9b ✅**：写回记忆 —— **个人/知识双库分离** + **双时态**(valid_at/invalid_at) + **trust 生命周期**(draft→verified→curated，多源佐证促升) + **sleep-time 异步写回**(不阻塞回答) + 检索按 trust 门控。默认关。
 - **M9c ✅**：研究型 Agent —— **多源取证**(KB⊕联网进 self-RAG) + **文档编排**(列提纲→逐节取证成文→行内引用/参考文献/论断表/冲突) + **会话态活文档** `/research` `/research/{id}` `/research/{id}/refine`。
+- **M10(⑥) ✅**：多租户**数据面强制** —— HMAC 签名租户令牌(fail-closed) + 入库盖章 + **检索三路一致过滤**(dense/BM25/缓存) + 记忆按租户隔离 + 跨租户读写越权拦截。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
@@ -157,6 +158,14 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 - **trust 生命周期**：个人偏好亲述即 verified；知识结论先 **draft**（默认不作答，防自毒），多次佐证 support≥阈值促升 verified；`/memory/promote`、`/memory/invalidate` 手动升降。
 - **异步写回**：`BackgroundTasks` 跑 `run_writeback`（抽取→去重决策 ADD/UPDATE/NOOP→写入），不阻塞回答（sleep-time）。
 - 135 单测(含生命周期/解析/写回编排) + 6 集成(真 pgvector 验证 trust 门控与双时态)。
+
+## 多租户数据面强制（⑥/M10）
+
+按既定拆分：**管理面(Java) 不属本仓**；本仓做 **数据面强制**（不可外包给网关）：
+- `app/tenant.py`：Java 签发 `tenant|<hmac>`，Bagent 用 `TENANT_SECRET` 验签；**绝不信任裸传 header**；未启用时不过滤（兼容单租户），启用时缺/错令牌直接 **403 fail-closed**。
+- **三路一致**：`index_document` 将 tenant 写入 document/chunk 的 metadata；`vector_search`、`BM25`、检索缓存 key 都按 tenant 过滤（一处漏了就越权）。
+- **记忆隔离**：`memories.tenant_id` 列；写入/去重/检索/列举均限本租户；跨租户删除被 `delete_document` 拦下。
+- 146 单测 + 9 集成（含跨租户 dense/hybrid 不召回对方文档、跨租户删除拒绝、fail-closed 403）。
 
 ## 研究型 Agent（M9c）
 

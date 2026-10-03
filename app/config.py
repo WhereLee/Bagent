@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     api_key: str = ""                 # 非空则启用 /query /search 等鉴权
     prompt_injection_guard: bool = True
 
+    # --- Multi-tenant 数据面强制 (⑥) ---
+    tenant_enforcement_enabled: bool = False  # 启用则每请求必须带合法签名租户令牌(fail-closed)
+    tenant_secret: str = ""                    # 验签共享密钥（与 Java 管理面一致）
+
     # --- Web search / 联网 (M9a) ---
     web_search_enabled: bool = False   # 默认关（不影响现有离线链路/测试）
     search_provider: str = "mock"      # mock | searxng

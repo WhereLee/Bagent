@@ -29,6 +29,7 @@ def retrieve(
     mode: str | None = None,
     rerank: bool | None = None,
     candidate_n: int | None = None,
+    tenant: str | None = None,
 ) -> list[RetrievedChunk]:
     s = get_settings()
     mode = mode or s.retrieval_mode
@@ -40,7 +41,7 @@ def retrieve(
     cache = get_retrieval_cache() if s.retrieval_cache_enabled else None
     key: tuple | None = None
     if cache is not None:
-        key = (query, mode, do_rerank, cand_n, top_k, s.retrieve_parent)
+        key = (query, mode, do_rerank, cand_n, top_k, s.retrieve_parent, tenant)
         cached = cache.get(key)
         if cached is not None:
             RETRIEVAL_CACHE.labels(result="hit").inc()
@@ -52,11 +53,11 @@ def retrieve(
     session = get_session()
     with STAGE_LATENCY.labels(stage="retrieval").time():
         try:
-            dense_hits = vector_search(session, qvec, cand_n)
+            dense_hits = vector_search(session, qvec, cand_n, tenant=tenant)
             dense_ids = [h.chunk_id for h in dense_hits]
 
             if mode == "hybrid":
-                lexical_ids = [cid for cid, _ in get_lexical_retriever().search(query, cand_n)]
+                lexical_ids = [cid for cid, _ in get_lexical_retriever().search(query, cand_n, tenant=tenant)]
                 fused = rrf_fuse([dense_ids, lexical_ids], k=s.rrf_k)
                 ordered_ids = [cid for cid, _ in fused]
             else:  # dense

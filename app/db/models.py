@@ -55,6 +55,7 @@ class Memory(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     scope: Mapped[str] = mapped_column(String)
+    tenant_id: Mapped[str | None] = mapped_column(String)
     owner_user_id: Mapped[str | None] = mapped_column(Text)
     kind: Mapped[str] = mapped_column(String, default="fact")
     content: Mapped[str] = mapped_column(Text)

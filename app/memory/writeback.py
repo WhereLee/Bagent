@@ -36,6 +36,7 @@ def _exists_hash(session, content: str) -> bool:
 def run_writeback(
     *, session, conversation: str, user_id: str | None, llm, embedder,
     dedup_sim: float, promote_threshold: int, source_ref: str | None = None,
+    tenant: str | None = None,
 ) -> dict:
     facts = extract_facts(conversation, llm)
     summary = {"add": 0, "update": 0, "noop": 0, "promote": 0, "skip": 0}
@@ -45,7 +46,7 @@ def run_writeback(
             summary["skip"] += 1        # 无用户身份不写私有记忆
             continue
         vec = embedder.encode_documents([f.content])[0]
-        similar = find_similar(session, vec, scope=f.scope, owner_user_id=owner, k=3)
+        similar = find_similar(session, vec, scope=f.scope, owner_user_id=owner, tenant=tenant, k=3)
         op, tid = decide_op(similar, dedup_sim, exact_hash_match=_exists_hash(session, f.content))
         MEMORY_OPS.labels(scope=f.scope, op=op.lower()).inc()
 
@@ -66,7 +67,7 @@ def run_writeback(
             trust = "verified" if f.scope == "personal" else "draft"
             add_memory(session, scope=f.scope, content=f.content, embedding=vec,
                        owner_user_id=owner, kind=f.kind, source_type="research",
-                       source_ref=source_ref, trust=trust)
+                       source_ref=source_ref, trust=trust, tenant_id=tenant)
             summary["add"] += 1
 
     session.commit()

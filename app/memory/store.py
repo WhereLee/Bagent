@@ -26,13 +26,16 @@ def add_memory(
     source_type: str = "research", source_ref: str | None = None,
     trust: str = "draft", confidence: float = 0.5,
     valid_at: datetime | None = None, invalid_at: datetime | None = None,
+    tenant_id: str | None = None,
 ) -> tuple[Memory, bool]:
-    """写入一条记忆；按 (scope, owner, content_hash) 分域幂等去重。返回 (行, 是否新)。"""
+    """写入一条记忆；按 (tenant, scope, owner, content_hash) 分域幂等去重。"""
     h = content_hash(content)
     q = select(Memory).where(Memory.content_hash == h, Memory.scope == scope,
                              Memory.is_deleted == False)  # noqa: E712
     q = q.where(Memory.owner_user_id == owner_user_id if owner_user_id is not None
                 else Memory.owner_user_id.is_(None))
+    q = q.where(Memory.tenant_id == tenant_id if tenant_id is not None
+                else Memory.tenant_id.is_(None))
     exist = session.scalar(q)
     if exist is not None:
         return exist, False
@@ -41,7 +44,7 @@ def add_memory(
         scope=scope, owner_user_id=owner_user_id, kind=kind, content=content,
         content_hash=h, source_type=source_type, source_ref=source_ref,
         trust=trust, confidence=confidence, support=1, embedding=emb,
-        valid_at=valid_at, invalid_at=invalid_at,
+        valid_at=valid_at, invalid_at=invalid_at, tenant_id=tenant_id,
     )
     session.add(row)
     session.flush()
@@ -71,26 +74,28 @@ def bump_support(session: Session, mem_id: int) -> Memory | None:
     return row
 
 
-def find_similar(session: Session, vec, *, scope: str, owner_user_id: str | None, k: int = 5) -> list[tuple[int, float, str]]:
+def find_similar(session: Session, vec, *, scope: str, owner_user_id: str | None, k: int = 5, tenant: str | None = None) -> list[tuple[int, float, str]]:
     sql = text(
         """
         SELECT id, 1 - (embedding <=> CAST(:q AS vector)) AS sim, content
         FROM memories
         WHERE is_deleted = FALSE AND scope = :scope AND embedding IS NOT NULL
           AND (owner_user_id IS NOT DISTINCT FROM :owner)
+          AND (CAST(:tenant AS text) IS NULL OR tenant_id = :tenant)
         ORDER BY embedding <=> CAST(:q AS vector)
         LIMIT :k
         """
     )
     rows = session.execute(sql, {"q": _vec_literal(vec), "scope": scope,
-                                 "owner": owner_user_id, "k": k}).mappings().all()
+                                 "owner": owner_user_id, "tenant": tenant, "k": k}).mappings().all()
     return [(r["id"], float(r["sim"]), r["content"]) for r in rows]
 
 
 def search_memories(session: Session, vec, *, scope: str | None = None,
-                    owner_user_id: str | None = None, min_trust: str = "verified",
+                    owner_user_id: str | None = None, tenant: str | None = None,
+                    min_trust: str = "verified",
                     k: int = 3, now: datetime | None = None) -> list[Memory]:
-    """按向量取记忆，且只返回：未删 + trust>=min_trust + 此刻有效。"""
+    """按向量取记忆，且只返回：未删 + trust>=min_trust + 此刻有效 + 本租户。"""
     now = now or datetime.now(timezone.utc)
     allowed = [t for t, r in TRUST_RANK.items() if r >= TRUST_RANK.get(min_trust, 1)]
     q = select(Memory).where(
@@ -100,6 +105,8 @@ def search_memories(session: Session, vec, *, scope: str | None = None,
         (Memory.valid_at.is_(None)) | (Memory.valid_at <= now),
         (Memory.invalid_at.is_(None)) | (Memory.invalid_at > now),
     )
+    if tenant is not None:
+        q = q.where(Memory.tenant_id == tenant)
     if scope is not None:
         q = q.where(Memory.scope == scope)
     if owner_user_id is not None:
@@ -128,8 +135,11 @@ def invalidate(session: Session, mem_id: int, invalid_at: datetime | None = None
 
 
 def list_memories(session: Session, *, scope: str | None = None,
-                  owner_user_id: str | None = None, limit: int = 50) -> list[Memory]:
+                  owner_user_id: str | None = None, tenant: str | None = None,
+                  limit: int = 50) -> list[Memory]:
     q = select(Memory).where(Memory.is_deleted == False)  # noqa: E712
+    if tenant is not None:
+        q = q.where(Memory.tenant_id == tenant)
     if scope:
         q = q.where(Memory.scope == scope)
     if owner_user_id:
