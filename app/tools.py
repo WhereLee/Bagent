@@ -51,3 +51,17 @@ TOOLS = {
     "research": research,
     "memory_search": memory_search,
 }
+
+
+def describe_tools() -> str:
+    """给 agent 的工具菜单（名/参数/用途），与 TOOLS 同源，避免两套描述漂移。"""
+    import inspect
+
+    lines = []
+    for name, fn in TOOLS.items():
+        sig = ", ".join(f"{p.name}:{p.annotation.__name__ if hasattr(p.annotation, '__name__') else 'any'}"
+                        f"{'' if p.default is inspect._empty else '=' + repr(p.default)}"
+                        for p in inspect.signature(fn).parameters.values())
+        desc = (fn.__doc__ or "").strip().splitlines()[0] if (fn.__doc__ or "") else name
+        lines.append(f"- {name}({sig}): {desc}")
+    return "\n".join(lines)

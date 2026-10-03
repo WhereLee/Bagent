@@ -99,7 +99,7 @@ tests/  docs/  models/
 - **M9c ✅**：研究型 Agent —— **多源取证**(KB⊕联网进 self-RAG) + **文档编排**(列提纲→逐节取证成文→行内引用/参考文献/论断表/冲突) + **会话态活文档** `/research` `/research/{id}` `/research/{id}/refine`。
 - **M10(⑥) ✅**：多租户**数据面强制** —— HMAC 签名租户令牌(fail-closed) + 入库盖章 + **检索三路一致过滤**(dense/BM25/缓存) + 记忆按租户隔离 + 跨租户读写越权拦截。
 - **M11(P0) ✅**：写回记忆**抗污染端到端 A/B**（三臂+合谋泄漏+四类判定+双场景）；修复 knowledge 记忆只写不读缺口。证据：naive 83%→门控 0%→合谋泄漏 50%（已知边界）。
-- **M11(P1) ✅**：MiMo 受控联网检索源（主源空/错时**配置降级**，非主 LLM 自决）+ **共享工具注册表 `app/tools.py`** + **MCP server**（能力对外可接）。
+- **M11(P1) ✅**：MiMo 受控联网检索源（主源空/错时**配置降级**，非主 LLM 自决）+ **共享工具注册表 `app/tools.py`** + **MCP server** + **显式有界 agent 循环与轨迹评测**（`/agent`，收敛率/非法动作率/平均步数）。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
@@ -164,6 +164,7 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 
 - **联网两条受控路径**：`SEARCH_PROVIDER=searxng`（自架、零 token、主用）；`MiMoWebProvider`（MiMo 联网插件，**按次计费、由 `SEARCH_FALLBACK` 在主源空/错时降级触发**）。**硬约束：主生成 LLM（DeepSeek/MiMo）绝不挂 `web_search`**——按量模型联网会几乎必然 cache-miss 导致成本暴涨；联网只走上述两条检索调用。`WEB_SEARCH` 指标按 provider 计量。
 - **共享工具注册表** `app/tools.py`：`kb_search/kb_answer/web_search/research/memory_search` 包成 JSON 安好的工具，MCP 与未来 agent 循环**复用同一套实现**。
+- **显式 agent 循环** `app/agent/react.py`（`/agent`）：有界 ReAct，**主 LLM 每步只出一个动作 JSON、自身绝不挂 web_search**；max_steps 预算、非法/未知动作计数、HITL 确认门。**轨迹评测** `app/evaluation/trajectory.py`：收敛率/非法动作率/平均步数。
 - **MCP server** `app/mcp_server.py`（`python -m app.mcp_server`）：把上述工具暴露为 MCP，Claude/Cursor 可接入。**依赖与 fastapi 的 starlette 版本互斥 → 用 `requirements-mcp.txt` 单独 venv 跑**。
 
 ## 写回记忆（M9b）

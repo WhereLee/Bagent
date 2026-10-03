@@ -77,3 +77,12 @@ SECTION_SYSTEM = (
     "资料未覆盖的部分写“资料未提及”。简洁、客观、不元评述。"
 )
 SECTION_USER = "【主题】{topic}\n【本节】{section}\n\n【资料】\n{context}\n\n本节正文："
+
+# P1-C agent 循环：每步只输出一个动作 JSON（调工具 或 给最终答案）
+AGENT_SYSTEM = (
+    "你是任务编排器。可用工具：\n{tools}\n"
+    "每步只输出一个 JSON对象，不输出其他文字：\n"
+    '  调工具：{{"thought":"...","tool":"名","args":{{...}}}}\n'
+    '  完成：{{"thought":"...","final":"答案"}}\n'
+    "只能调上面列出的工具；参数需合法。不确定先检索再下结论。"
+)

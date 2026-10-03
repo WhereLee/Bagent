@@ -302,3 +302,18 @@ def research_refine(sid: str, req: RefineReq, request: Request) -> dict:
     if doc is None:
         raise HTTPException(status_code=404, detail="session/section not found")
     return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
+
+
+class AgentReq(BaseModel):
+    goal: str
+    max_steps: int = 6
+
+
+@app.post("/agent")
+def agent_run(req: AgentReq, request: Request) -> dict:
+    """显式有界 agent 循环：复用 app.tools 工具集（联网只经受控 web_search，主 LLM 不隐式联网）。"""
+    _tenant_of(request)
+    from app.agent.react import run_agent
+    traj = run_agent(req.goal, llm=get_llm(), max_steps=req.max_steps)
+    from app.evaluation.trajectory import summarize_trajectories
+    return {"result": traj, "metrics": summarize_trajectories([traj])}

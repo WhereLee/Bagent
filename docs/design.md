@@ -198,3 +198,7 @@ Reranker 增 OnnxReranker 后端（同 .rerank 接口，喂 input_ids/attention_
 成本护栏(用户明确)：主生成 LLM(DeepSeek/MiMo) 绝不挂 web_search——按量模型联网几乎必然 cache-miss→成本暴涨。联网只两条受控检索路径：SearxNG(自架/零token/主用) + MiMoWebProvider(MiMo联网插件, 按次计费, 由 SEARCH_FALLBACK 在主源空/错时降级; 独立检索调用非主模型自决)。MiMo 返回取 url_citation annotations + 正文链接兜底归一 SearchResult→既有 SSRF/清洗。WEB_SEARCH 指标按 provider 计量。
 共享工具注册表 app/tools.py(kb_search/kb_answer/web_search/research/memory_search)：MCP server 与未来 agent 循环复用同一实现。app/mcp_server.py 用 FastMCP 绑定 TOOLS。
 依赖教训(实测)：mcp 的 sse-starlette 要 starlette>=0.49，fastapi 锁 starlette<0.47 → 二者同 venv 冲突 → MCP server 必须独立 venv(requirements-mcp.txt)，web 应用 venv 不装 mcp。test_tools 用 importorskip 保证 app 环境不装 mcp 也绿。
+
+## 23. P1-C 显式 agent 循环 + 轨迹评测
+app/agent/react.py：有界 ReAct，动作空间=app.tools.TOOLS(与 MCP 同源)。主 LLM 每步只输出一个动作 JSON(final 或 tool+args)，parse_action 稳健解析失败计 invalid；**主 LLM 绝不挂 web_search**(成本护栏)，联网只经 web_search 工具走受控检索。max_steps 预算防死循环；未知工具/异常计入 invalid 并反馈重试；HITL: requires_confirm(默认 research)无 confirm 放行→status awaiting_confirmation(先做门标志，不接 UI)。
+app/evaluation/trajectory.py：收敛率(status=final)/非法动作率/平均步数，复用 bootstrap_ci——把"agent 走得对不对"变数据而非只看最终答案(面经点名的加分项)。/agent 端点复用之。测试 166 单测(含 8 agent)。
