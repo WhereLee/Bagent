@@ -66,8 +66,9 @@ class MiMoWebProvider:
         for a in (msg.get("annotations") or []):
             if not isinstance(a, dict):
                 continue
-            c = a.get("url_citation") or a        # 兼容 OpenAI 风格嵌套 与 平铺
-            add(str(c.get("title", "")), str(c.get("url", "")), str(c.get("snippet", c.get("content", ""))))
+            c = a.get("url_citation") or a        # 兼容嵌套与平铺（MiMo 实为平铺）
+            snippet = c.get("summary") or c.get("snippet") or c.get("content") or ""   # 真实字段是 summary
+            add(str(c.get("title", "")), str(c.get("url", "")), str(snippet))
 
         if not out:                                # 无结构化标注→从正文兜底抽链接
             content = msg.get("content") or ""

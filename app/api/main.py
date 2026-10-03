@@ -29,6 +29,7 @@ from app.retrieval.cache import get_retrieval_cache
 from app.retrieval.store import delete_document
 from app.research import agent as research_agent
 from app.research import session as research_session
+from app.research.publish import publish as research_publish
 
 @asynccontextmanager
 async def _lifespan(_app):
@@ -63,6 +64,7 @@ class QueryReq(BaseModel):
     top_k: int | None = None
     self_rag: bool | None = None   # 覆盖默认：是否启用 self-RAG/冲突检测
     user_id: str | None = None     # 传入则启用个人记忆/写回
+    agent: bool = False            # 走显式工具循环（有界 ReAct）而非单次管道
 
 
 class ChatReq(BaseModel):
@@ -153,10 +155,42 @@ def delete_doc(req: DeleteReq, request: Request) -> dict:
 @app.post("/query")
 def query(req: QueryReq, request: Request, background: BackgroundTasks) -> dict:
     tenant = _tenant_of(request)
+    if req.agent:
+        return _query_agent(req.query, tenant=tenant, top_k=req.top_k)
     answer = answer_query(req.query, top_k=req.top_k, self_rag=req.self_rag,
                           user_id=req.user_id, tenant=tenant)
     _schedule_writeback(background, req.user_id, req.query, answer.text, tenant)
     return asdict(answer)
+
+
+def _query_agent(query: str, *, tenant: str | None, top_k: int | None) -> dict:
+    """agent 模式：有界工具循环产出带依据的答案；工具只走受控检索（主 LLM 不隐式联网）。"""
+    from app.agent.react import run_agent
+    from app.evaluation.trajectory import summarize_trajectories
+    from app.retrieval.retriever import retrieve
+    from app.search.web_search import web_search as _ws
+
+    def kb_search(q: str, top_k_: int = 5):
+        return [{"source": c.source, "score": round(c.score, 4), "snippet": c.content[:200]}
+                for c in retrieve(q, top_k=top_k_ or top_k or 5)]
+
+    tools = {"kb_search": kb_search, "web_search": lambda q, max_results=5: [
+        {"url": c.metadata.get("url"), "snippet": c.content[:200]} for c in _ws(q, max_results)]}
+    traj = run_agent(f"请检索并回答（末尾给出依据来源）：{query}", llm=get_llm(), tools=tools, max_steps=4)
+    sources = sorted({s.get("source") or s.get("url") for st in traj["steps"]
+                      for s in _parse_obs(st.get("observation")) if (s.get("source") or s.get("url"))})
+    return {"query": query, "text": traj.get("final") or "（未收敛）",
+            "sources": sources, "mode": "agent", "status": traj["status"],
+            "metrics": summarize_trajectories([traj])}
+
+
+def _parse_obs(obs):
+    import json
+    try:
+        v = json.loads(obs or "[]")
+        return v if isinstance(v, list) else []
+    except (ValueError, TypeError):
+        return []
 
 
 @app.post("/chat")
@@ -317,3 +351,18 @@ def agent_run(req: AgentReq, request: Request) -> dict:
     traj = run_agent(req.goal, llm=get_llm(), max_steps=req.max_steps)
     from app.evaluation.trajectory import summarize_trajectories
     return {"result": traj, "metrics": summarize_trajectories([traj])}
+
+
+@app.post("/research/{sid}/publish")
+def research_publish_endpoint(sid: str, request: Request) -> dict:
+    """把研究文档的论断沉淀为 knowledge 记忆（draft，受 trust 门控，不直接污染作答）。"""
+    tenant = _tenant_of(request)
+    doc = research_session.get(sid, tenant=tenant)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    session = get_session()
+    try:
+        added = research_publish(doc, session=session, embedder=get_embedder(), tenant=tenant)
+    finally:
+        session.close()
+    return {"session_id": sid, "published": added, "trust": "draft"}

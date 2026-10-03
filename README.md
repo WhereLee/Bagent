@@ -100,6 +100,7 @@ tests/  docs/  models/
 - **M10(⑥) ✅**：多租户**数据面强制** —— HMAC 签名租户令牌(fail-closed) + 入库盖章 + **检索三路一致过滤**(dense/BM25/缓存) + 记忆按租户隔离 + 跨租户读写越权拦截。
 - **M11(P0) ✅**：写回记忆**抗污染端到端 A/B**（三臂+合谋泄漏+四类判定+双场景）；修复 knowledge 记忆只写不读缺口。证据：naive 83%→门控 0%→合谋泄漏 50%（已知边界）。
 - **M11(P1) ✅**：MiMo 受控联网检索源（主源空/错时**配置降级**，非主 LLM 自决）+ **共享工具注册表 `app/tools.py`** + **MCP server** + **显式有界 agent 循环与轨迹评测**（`/agent`，收敛率/非法动作率/平均步数）。
+- **M11(P2) ✅**：MiMo **端到端真验**（确认返回为平铺 `url_citation`、摘要字段实为 `summary`，修解析+回归测试）+ **wiki 沉淀** `/research/{sid}/publish`（论断→knowledge 记忆 draft，受同一 trust 门控）+ **agent 循环接入 `/query`**（`agent=true` 走工具循环产带依据答案）。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
@@ -166,6 +167,8 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 - **共享工具注册表** `app/tools.py`：`kb_search/kb_answer/web_search/research/memory_search` 包成 JSON 安好的工具，MCP 与未来 agent 循环**复用同一套实现**。
 - **显式 agent 循环** `app/agent/react.py`（`/agent`）：有界 ReAct，**主 LLM 每步只出一个动作 JSON、自身绝不挂 web_search**；max_steps 预算、非法/未知动作计数、HITL 确认门。**轨迹评测** `app/evaluation/trajectory.py`：收敛率/非法动作率/平均步数。
 - **MCP server** `app/mcp_server.py`（`python -m app.mcp_server`）：把上述工具暴露为 MCP，Claude/Cursor 可接入。**依赖与 fastapi 的 starlette 版本互斥 → 用 `requirements-mcp.txt` 单独 venv 跑**。
+- **wiki 沉淀** `/research/{sid}/publish`：研究文档论断→ knowledge 记忆（**trust=draft**，受 P0 同一门控，不直接污染作答），把"研究完"变成团队可复用资产。
+- **agent 接入 `/query`**：`{"query":..., "agent":true}` 走有界工具循环产出带依据答案（附轨迹指标）；`verify_mimo_provider.py` 记录 MiMo 真实返回结构。
 
 ## 写回记忆（M9b）
 

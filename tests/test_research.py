@@ -83,3 +83,36 @@ def test_session_create_get_refine():
 
 def test_cites_in_order():
     assert cites_in("a[2] b[1] c[2] d[3]") == [2, 1, 3]
+
+
+def test_claims_to_facts_maps_sources():
+    from app.research.doc import Claim, Reference
+    from app.research.publish import claims_to_facts
+    doc = ResearchDoc(topic="秦惠文王",
+                      references=[Reference(id=1, source="http://x/1", url="http://x/1")],
+                      claims=[Claim(text="用张仪行连横", reference_ids=[1])])
+    facts = claims_to_facts(doc)
+    assert facts == [{"content": "秦惠文王：用张仪行连横", "source_ref": "http://x/1"}]
+
+
+def test_publish_writes_draft_knowledge(monkeypatch):
+    import numpy as np
+    from app.research import publish as pub
+    added = {}
+
+    def fake_add(session, **kw):
+        added.update(kw)
+        class R: id = 1
+        return R(), True
+
+    monkeypatch.setattr("app.memory.store.add_memory", fake_add)
+
+    class Emb:
+        def encode_documents(self, texts): return np.ones((len(texts), 4), dtype=np.float32)
+
+    from app.research.doc import Claim, Reference
+    doc = ResearchDoc(topic="t", references=[Reference(id=1, source="u")],
+                      claims=[Claim(text="c1", reference_ids=[1])])
+    n = pub.publish(doc, session=type("S", (), {"commit": lambda self: None})(),
+                    embedder=Emb(), tenant="T")
+    assert n == 1 and added["scope"] == "knowledge" and added["trust"] == "draft" and added["tenant_id"] == "T"

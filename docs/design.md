@@ -202,3 +202,9 @@ Reranker 增 OnnxReranker 后端（同 .rerank 接口，喂 input_ids/attention_
 ## 23. P1-C 显式 agent 循环 + 轨迹评测
 app/agent/react.py：有界 ReAct，动作空间=app.tools.TOOLS(与 MCP 同源)。主 LLM 每步只输出一个动作 JSON(final 或 tool+args)，parse_action 稳健解析失败计 invalid；**主 LLM 绝不挂 web_search**(成本护栏)，联网只经 web_search 工具走受控检索。max_steps 预算防死循环；未知工具/异常计入 invalid 并反馈重试；HITL: requires_confirm(默认 research)无 confirm 放行→status awaiting_confirmation(先做门标志，不接 UI)。
 app/evaluation/trajectory.py：收敛率(status=final)/非法动作率/平均步数，复用 bootstrap_ci——把"agent 走得对不对"变数据而非只看最终答案(面经点名的加分项)。/agent 端点复用之。测试 166 单测(含 8 agent)。
+
+## 24. P2 MiMo端到端验证 / wiki沉淀 / agent入query
+- MiMo provider 真调验证(verify_mimo_provider.py)：返回 message.annotations 为**平铺 url_citation**（非嵌套），字段 url/title/**summary**/site_name；解析器原取 snippet/content→摘要全空，已修(优先 summary)并加回归 test_mimo_parse_annotations。
+- wiki 沉淀 app/research/publish.py：claims_to_facts(纯映射) + publish→ add_memory(scope=knowledge,trust=draft)。/research/{sid}/publish 端点。走 P0 同一 trust 门控：draft 不直接进作答，需佐证/人工促升——"沉淀"与"防污染"不矛盾。
+- agent 入 /query：query 加 agent=true → _query_agent 走 run_agent(工具=受控 kb_search/web_search)，返回 final+sources+轨迹指标。主 LLM 仍不隐式联网。
+测试 168 单测。n=100 污染确认跑后台进行中，终稿数出后刷新 §21/README。

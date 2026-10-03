@@ -93,11 +93,12 @@ from app.search.mimo import MiMoWebProvider  # noqa: E402
 def test_mimo_parse_annotations():
     data = {"choices": [{"message": {"content": "...", "annotations": [
         {"type": "url_citation", "url_citation": {"url": "https://a.com/x", "title": "标题A"}},
-        {"url": "https://b.com/y", "snippet": "平铺写法"},
+        {"type": "url_citation", "url": "https://b.com/y", "summary": "平铺真实字段摘要"},   # MiMo 真实结构
     ]}}]}
     res = MiMoWebProvider._parse(data, 5)
     assert {r.url for r in res} == {"https://a.com/x", "https://b.com/y"}
     assert any(r.title == "标题A" for r in res)
+    assert any(r.snippet == "平铺真实字段摘要" for r in res)      # 保证 summary 被取到
 
 
 def test_mimo_content_url_fallback_when_no_annotations():
