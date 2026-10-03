@@ -27,9 +27,13 @@ def add_memory(
     trust: str = "draft", confidence: float = 0.5,
     valid_at: datetime | None = None, invalid_at: datetime | None = None,
 ) -> tuple[Memory, bool]:
-    """写入一条记忆；按 content_hash 幂等去重。返回 (行, 是否新)。embedding 为 list/np。"""
+    """写入一条记忆；按 (scope, owner, content_hash) 分域幂等去重。返回 (行, 是否新)。"""
     h = content_hash(content)
-    exist = session.scalar(select(Memory).where(Memory.content_hash == h, Memory.is_deleted == False))  # noqa: E712
+    q = select(Memory).where(Memory.content_hash == h, Memory.scope == scope,
+                             Memory.is_deleted == False)  # noqa: E712
+    q = q.where(Memory.owner_user_id == owner_user_id if owner_user_id is not None
+                else Memory.owner_user_id.is_(None))
+    exist = session.scalar(q)
     if exist is not None:
         return exist, False
     emb = embedding.tolist() if isinstance(embedding, np.ndarray) else list(embedding)

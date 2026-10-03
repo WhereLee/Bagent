@@ -88,6 +88,7 @@ tests/  docs/  models/
 - **M8 ✅**：Self-RAG 与知识冲突 —— 证据充分性自检 + 不足时改写重检(带上限) + 多源矛盾检测与降级；为接入联网多源预留中枢。
 - **M9a ✅**（进行中）：联网检索层 —— `SearchProvider` 抽象 + **SearXNG(百度系) provider** + trafilatura 抽正文/时效 + **SSRF/注入清洗** + mock provider + 自架部署物料；默认关，结果以 draft 进多源佐证。
 - **M9b ✅**：写回记忆 —— **个人/知识双库分离** + **双时态**(valid_at/invalid_at) + **trust 生命周期**(draft→verified→curated，多源佐证促升) + **sleep-time 异步写回**(不阻塞回答) + 检索按 trust 门控。默认关。
+- **M9c ✅**：研究型 Agent —— **多源取证**(KB⊕联网进 self-RAG) + **文档编排**(列提纲→逐节取证成文→行内引用/参考文献/论断表/冲突) + **会话态活文档** `/research` `/research/{id}` `/research/{id}/refine`。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
@@ -156,6 +157,14 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 - **trust 生命周期**：个人偏好亲述即 verified；知识结论先 **draft**（默认不作答，防自毒），多次佐证 support≥阈值促升 verified；`/memory/promote`、`/memory/invalidate` 手动升降。
 - **异步写回**：`BackgroundTasks` 跑 `run_writeback`（抽取→去重决策 ADD/UPDATE/NOOP→写入），不阻塞回答（sleep-time）。
 - 135 单测(含生命周期/解析/写回编排) + 6 集成(真 pgvector 验证 trust 门控与双时态)。
+
+## 研究型 Agent（M9c）
+
+`app/research/`：`POST /research {topic, use_kb, use_web}` → 产出带引用/时效/冲突标注的 `ResearchDoc`（markdown + 结构化），返回 `session_id`：
+- **多源取证**（`evidence.py`）：每节 KB⊕联网经 self-RAG 充分性反思（带上限），去重合并。
+- **编排**（`agent.py`）：`plan_outline`(LLM列提纲) → 逐节取证成文 → 全局参考文献编号重映射 → 论断表 + 冲突(复用 M8)。有界 max_sections/max_iters。
+- **会话态**（`session.py`）：进程内存活文档，`/research/{id}/refine` 逐轮重做某节并回填引用。
+- 141 单测（含提纲解析/去重/装配/会话 refine，全 fake 不联网）。`use_web` 默认取 `WEB_SEARCH_ENABLED`。
 
 ## 联网检索层（M9a）
 

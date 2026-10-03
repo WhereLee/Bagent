@@ -174,3 +174,8 @@ Reranker 增 OnnxReranker 后端（同 .rerank 接口，喂 input_ids/attention_
 ## 18. M9b 写回记忆
 双库分离(memories 表 scope=personal/knowledge)防“偏好当共享知识/未证结论当常识”；双时态 valid_at/invalid_at 表联网知识会过期；trust 生命周期 draft→verified→curated：个人偏好亲述即 verified(用户是自身偏好权威且私有低风险)，知识结论先 draft 且默认不参与作答(trust 门控)，多次佐证 support≥阈值促升。写回走 FastAPI BackgroundTasks(sleep-time 异步，不阻塞回答)：抽取事实(LLM, 纯解析可测)→按相似度 decide_op ADD/UPDATE/NOOP→写入。/memory 列举/promote/invalidate。默认 MEMORY_ENABLED=false。
 关键防自毒：未核实来源(web/research)默认 draft 且被 search_memories 的 min_trust 挡在作答之外，只有被多源佐证或人工 promote 才参与——这条生命周期就是为联网时代准备的。
+
+## 19. M9c 研究型 Agent（编排 + 文档 + 会话态）
+读循环之上长出编排层：POST /research → plan_outline(LLM) → 逐节 gather_evidence(KB⊕web, self-RAG 充分性反思, 去重) → 成文(行内[n]) → 全局参考文献编号重映射(local→global, 内容去重共享) → 论断表(按节引用+最低trust) → 冲突(复用 M8 detect_conflict)。有界 max_sections/max_iters，空证据节显式标注不编造。
+会话态 session.py：进程内活文档 dict + 锁；/research/{id}/refine 重做某节回填引用。持久化 DB 属后续。
+交付物 schema(doc.py)：ResearchDoc{topic/outline/sections/claims/references/conflicts} + to_markdown。联网结果作为 draft 源进入，由 M9b 的 trust 生命周期管住是否可作答复。

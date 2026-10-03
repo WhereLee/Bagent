@@ -64,3 +64,16 @@ MEMORY_EXTRACT_SYSTEM = (
     "无值得记的就输出 []。"
 )
 MEMORY_EXTRACT_USER = "【对话】\n{conversation}\n\nJSON："
+
+# M9c 研究编排：列提纲 / 逐节成文（行内引用）
+PLAN_OUTLINE_SYSTEM = (
+    "你是研究报告规划器。针对主题给出简洁提纲：3-{max_sections} 个小节标题，"
+    "覆盖背景/关键事实/分析/结论。只输出 JSON 数组的标题字符串，不要解释。"
+)
+PLAN_OUTLINE_USER = "【主题】\n{topic}\n\nJSON："
+
+SECTION_SYSTEM = (
+    "你只依据【资料】撰写该节，不得编造。每句若来自某条资料就在句末标 [编号]（编号与资料 1:1）。"
+    "资料未覆盖的部分写“资料未提及”。简洁、客观、不元评述。"
+)
+SECTION_USER = "【主题】{topic}\n【本节】{section}\n\n【资料】\n{context}\n\n本节正文："

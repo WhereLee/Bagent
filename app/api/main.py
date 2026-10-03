@@ -24,6 +24,8 @@ from app.ratelimit import RateLimiter
 from app.retrieval.retriever import retrieve
 from app.retrieval.cache import get_retrieval_cache
 from app.retrieval.store import delete_document
+from app.research import agent as research_agent
+from app.research import session as research_session
 
 app = FastAPI(title="Bagent RAG", version="0.1.0")
 
@@ -218,3 +220,46 @@ def memory_invalidate(req: MemoryInvalidateReq) -> dict:
     finally:
         session.close()
     return {"id": req.id, "invalidated": ok}
+
+
+class ResearchReq(BaseModel):
+    topic: str
+    use_kb: bool = True
+    use_web: bool | None = None   # 默认取 config.web_search_enabled
+    max_sections: int = 4
+    user_id: str | None = None
+
+
+class RefineReq(BaseModel):
+    index: int
+    use_kb: bool = True
+    use_web: bool | None = None
+
+
+def _web_flag(use_web) -> bool:
+    return get_settings().web_search_enabled if use_web is None else bool(use_web)
+
+
+@app.post("/research")
+def research(req: ResearchReq) -> dict:
+    doc = research_agent.research(req.topic, llm=get_llm(), use_kb=req.use_kb,
+                                  use_web=_web_flag(req.use_web), max_sections=req.max_sections)
+    sid = research_session.create(doc)
+    return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
+
+
+@app.get("/research/{sid}")
+def research_get(sid: str) -> dict:
+    doc = research_session.get(sid)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
+
+
+@app.post("/research/{sid}/refine")
+def research_refine(sid: str, req: RefineReq) -> dict:
+    doc = research_session.refine_section(sid, req.index, llm=get_llm(),
+                                          use_kb=req.use_kb, use_web=_web_flag(req.use_web))
+    if doc is None:
+        raise HTTPException(status_code=404, detail="session/section not found")
+    return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
