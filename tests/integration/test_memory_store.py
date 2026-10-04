@@ -97,19 +97,38 @@ def test_level_and_tag_filter(owner):
         s.rollback(); s.close()
 
 
+def test_record_feedback_drives_trust(owner):
+    s = get_session()
+    try:
+        r, _ = ms.add_memory(s, scope="knowledge", content="回标促升" + owner,
+                             embedding=_v("回标促升"), trust="draft")
+        s.commit()
+        assert ms.record_feedback(s, r.id, ok=True) == "promote"
+        assert s.get(ms.Memory, r.id).trust == "verified"
+
+        r2, _ = ms.add_memory(s, scope="knowledge", content="回标作废" + owner,
+                              embedding=_v("回标作废"), trust="verified")
+        s.commit()
+        assert ms.record_feedback(s, r2.id, ok=False) == "noop"          # 1 次失败
+        assert ms.record_feedback(s, r2.id, ok=False) == "invalidate"    # 2 次达阈值
+        assert s.get(ms.Memory, r2.id).invalid_at is not None
+    finally:
+        s.rollback(); s.close()
+
+
 def test_event_archive_playbook(owner):
     s = get_session()
     try:
         ev = ms.create_event(s, name="骑到文昌复盘", type="活动", created_by=owner)
         s.flush()
-        ms.add_memory(s, scope="knowledge", content="重大活动必做风险预案", embedding=_v("风险预案"),
+        ms.add_memory(s, scope="knowledge", content="重大活动必做风险预案" + owner, embedding=_v("风险预案"),
                       trust="verified", level="playbook", event_id=ev.id)
-        ms.add_memory(s, scope="knowledge", content="文昌露营点A", embedding=_v("露营点"),
+        ms.add_memory(s, scope="knowledge", content="文昌露营点A" + owner, embedding=_v("露营点"),
                       trust="verified", level="fact", event_id=ev.id)
         s.commit()
         pb = ms.event_playbook(s, ev.id)
         assert pb["event"]["name"] == "骑到文昌复盘"
-        assert pb["playbook"] == ["重大活动必做风险预案"]
-        assert any(f["content"] == "文昌露营点A" for f in pb["facts"])
+        assert pb["playbook"] == ["重大活动必做风险预案" + owner]
+        assert any(f["content"].startswith("文昌露营点A") for f in pb["facts"])
     finally:
         s.rollback(); s.close()

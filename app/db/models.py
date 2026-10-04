@@ -68,6 +68,8 @@ class Memory(Base):
     trust: Mapped[str] = mapped_column(String, default="draft")
     confidence: Mapped[float] = mapped_column(default=0.5)
     support: Mapped[int] = mapped_column(Integer, default=1)
+    use_success: Mapped[int] = mapped_column(Integer, default=0)   # P3-C 结果回标
+    use_fail: Mapped[int] = mapped_column(Integer, default=0)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(512))
     valid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     invalid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

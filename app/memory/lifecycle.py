@@ -34,6 +34,19 @@ def promote_trust(support: int, threshold: int, current: str = "draft") -> str:
     return "verified" if support >= threshold else current
 
 
+# P3-C：经验靠"用过之后成没成"治理（弥补"多源一致≠真相"）
+_NEXT_TRUST = {"draft": "verified", "verified": "curated", "curated": "curated"}
+
+
+def outcome_action(ok: bool, current_trust: str, fail_total: int, fail_threshold: int = 2) -> tuple[str, str | None]:
+    """结果反馈决策：成功→促升一级(经验被验证)；失败累计达阈值→作废；否则不动。返回 (action, new_trust)。"""
+    if ok:
+        return ("promote", _NEXT_TRUST.get(current_trust, "curated"))
+    if fail_total >= fail_threshold:
+        return ("invalidate", None)
+    return ("noop", None)
+
+
 def decide_op(similar: list[tuple[int, float]], dedup_sim: float,
               exact_hash_match: bool = False) -> tuple[str, int | None]:
     """给定相似命中 [(id, similarity)]，决定 ADD/UPDATE/NOOP。

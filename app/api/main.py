@@ -18,7 +18,7 @@ from app.ingestion.indexer import ingest_file
 from app.db.session import get_session
 from app.tenant import TenantError, resolve_tenant
 from app.memory.store import invalidate as mem_invalidate
-from app.memory.store import create_event, event_playbook, list_memories, set_trust
+from app.memory.store import create_event, event_playbook, list_memories, record_feedback, set_trust
 from app.memory.writeback import run_writeback
 from app.observability.logging import configure_logging, get_logger
 from app.observability.metrics import render_metrics
@@ -282,6 +282,25 @@ def memory_invalidate(req: MemoryInvalidateReq, request: Request) -> dict:
     if not ok:
         raise HTTPException(status_code=403, detail="memory not found or not in your tenant")
     return {"id": req.id, "invalidated": ok}
+
+
+class MemoryFeedbackReq(BaseModel):
+    id: int
+    ok: bool          # 这条经验按其所行，结果是好是坏
+
+
+@app.post("/memory/feedback")
+def memory_feedback(req: MemoryFeedbackReq, request: Request) -> dict:
+    """P3-C 结果回标：用一条经验后的成败驱动促升/作废（弥补"多源一致≠真相"）。"""
+    tenant = _tenant_of(request)
+    session = get_session()
+    try:
+        action = record_feedback(session, req.id, ok=req.ok, tenant=tenant)
+    finally:
+        session.close()
+    if action is None:
+        raise HTTPException(status_code=403, detail="memory not found or not in your tenant")
+    return {"id": req.id, "ok": req.ok, "action": action}
 
 
 class ResearchReq(BaseModel):

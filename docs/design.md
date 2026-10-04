@@ -215,3 +215,7 @@ app/evaluation/trajectory.py：收敛率(status=final)/非法动作率/平均步
 
 ## 26. P3-B 复盘整体归档（Event）
 events 表(name/type/tags/summary/created_by) + memories.event_id 关联。store.create_event / get_event / list_memories(event_id) / event_playbook(event_id)→{event, playbook[], facts[]}。publish 接受 event_id（可按 event_name 自动建）。API：POST /events、GET /events/{id}/playbook、/research/{sid}/publish 带事件归属。把"一次对话/活动"归成整份可检索可引用的经验档案，补上"复盘整体归档"这块。测试 12 集成含事件档案。
+
+## 28. P3-C 结果回标（经验靠成败治理）
+memories.use_success/use_fail 计数 + lifecycle.outcome_action(纯)：成功→促升一级(draft→verified→curated)；失败累计达阈值(默认2)→作废(invalid_at)。store.record_feedback(id,ok,tenant 校验) + API POST /memory/feedback。补上 P0 暴露的"多源一致≠真相"缺口——来源数之外再加"用过成没成"这个更硬的信号。测试：outcome_action 单测 + record_feedback 集成(促升/达阈值作废)。
+注：集成测试数据须按 owner 后缀唯一化，否则 add_memory 内容哈希去重会撞上一轮 commit 残留(rollback 撤不掉已提交行)。

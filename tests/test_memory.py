@@ -7,6 +7,7 @@ from app.memory.extract import parse_facts
 from app.memory.lifecycle import (
     decide_op,
     is_active,
+    outcome_action,
     promote_trust,
     trust_ok,
 )
@@ -59,3 +60,11 @@ def test_parse_facts_level_and_tags():
     assert f.level == "playbook" and f.tags["type"] == "活动"
     assert parse_facts('[{"content":"x","scope":"knowledge"}]')[0].level == "fact"   # 缺省
     assert parse_facts('[{"content":"x","scope":"knowledge","level":"garbage"}]')[0].level == "fact"
+
+
+def test_outcome_action():
+    a, t = outcome_action(True, "draft", 0)
+    assert a == "promote" and t == "verified"
+    assert outcome_action(True, "verified", 0)[1] == "curated"
+    assert outcome_action(False, "draft", 1, 2)[0] == "noop"        # 未达阈值
+    assert outcome_action(False, "verified", 2, 2)[0] == "invalidate"  # 达阈值作废

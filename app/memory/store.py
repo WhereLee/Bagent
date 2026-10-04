@@ -9,7 +9,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.db.models import Event, Memory
-from app.memory.lifecycle import TRUST_RANK
+from app.memory.lifecycle import TRUST_RANK, outcome_action
 
 
 def content_hash(content: str) -> str:
@@ -185,3 +185,23 @@ def event_playbook(session: Session, event_id: int) -> dict:
         "playbook": [m.content for m in mems if m.level == "playbook"],
         "facts": [{"content": m.content, "source": m.source_ref, "trust": m.trust} for m in mems if m.level != "playbook"],
     }
+
+
+def record_feedback(session: Session, memory_id: int, *, ok: bool,
+                    tenant: str | None = None, fail_threshold: int = 2) -> str | None:
+    """P3-C 结果回标：成功促升一级；失败累计达阈值则作废。跨租户返回 None。"""
+    row = session.get(Memory, memory_id)
+    if row is None or row.is_deleted or (tenant is not None and row.tenant_id != tenant):
+        return None
+    if ok:
+        row.use_success += 1
+    else:
+        row.use_fail += 1
+    action, new_trust = outcome_action(ok, row.trust, row.use_fail, fail_threshold)
+    if action == "promote" and new_trust:
+        row.trust = new_trust
+    elif action == "invalidate":
+        row.invalid_at = datetime.now(timezone.utc)
+    row.updated_at = func.now()
+    session.commit()
+    return action
