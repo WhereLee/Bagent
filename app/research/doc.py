@@ -46,6 +46,17 @@ class ResearchDoc:
         from dataclasses import asdict
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "ResearchDoc":
+        """to_dict 的逆（供跨进程/Redis 会话重建）。"""
+        return cls(
+            topic=d["topic"], abstract=d.get("abstract", ""), outline=d.get("outline", []),
+            sections=[Section(**s) for s in d.get("sections", [])],
+            references=[Reference(**r) for r in d.get("references", [])],
+            claims=[Claim(**c) for c in d.get("claims", [])],
+            conflicts=d.get("conflicts", []), meta=d.get("meta", {}),
+        )
+
     def to_markdown(self) -> str:
         lines = [f"# {self.topic}", ""]
         if self.abstract:

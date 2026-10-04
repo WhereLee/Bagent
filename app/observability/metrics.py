@@ -87,6 +87,11 @@ MEMORY_OPS = Counter(
     ["scope", "op"],  # op: add/update/noop/promote/invalidate
 )
 
+# M13 成本预算降级计数
+COST_DEGRADED = Counter(
+    "bagent_cost_degraded_total", "因超 token 预算而降级的请求数"
+)
+
 
 def render_metrics() -> tuple[bytes, str]:
     """返回 (/metrics 响应体, content-type)。"""

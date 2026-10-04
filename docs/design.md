@@ -219,3 +219,10 @@ events 表(name/type/tags/summary/created_by) + memories.event_id 关联。store
 ## 28. P3-C 结果回标（经验靠成败治理）
 memories.use_success/use_fail 计数 + lifecycle.outcome_action(纯)：成功→促升一级(draft→verified→curated)；失败累计达阈值(默认2)→作废(invalid_at)。store.record_feedback(id,ok,tenant 校验) + API POST /memory/feedback。补上 P0 暴露的"多源一致≠真相"缺口——来源数之外再加"用过成没成"这个更硬的信号。测试：outcome_action 单测 + record_feedback 集成(促升/达阈值作废)。
 注：集成测试数据须按 owner 后缀唯一化，否则 add_memory 内容哈希去重会撞上一轮 commit 残留(rollback 撤不掉已提交行)。
+
+## 29. M13 成本降级 / Redis 外部化 / SLO / 评测上量
+- 成本预算降级 app/generation/budget.py(纯)：estimate_tokens/should_degrade；answer_query 超预算则 top_k→degraded_top_k、rerank=False、关忠实度，Answer.degraded+CostDegraded 指标。默认 budget=0 不降级。
+- Redis 外部化(接口不变，redis_url 空则内存)：retrieval.cache RedisCache(JSON 存 list[dict]，retriever 改存取 dict+重建)；ratelimit RedisRateLimiter 固定窗口(注明与令牌桶语义近似不等价)；research.session _MemStore/_RedisStore(ResearchDoc to_dict/from_dict JSON 往返，refine 回写)。redis 加入 requirements(可选，仅 REDIS_URL 时 import)。诚实边界：Redis 给状态一致+web 横扩，不解决 CPU rerank 吞吐。
+- SLO/告警 deploy/prometheus/slo.rules.yml(recording+p95/错误率/缓存命中 + alerts 错误率/延迟/成本降级/LLM降级) + docs/SLO.md。指标名对齐真实 HTTP_LATENCY(bagent_http_request_seconds)/requests_total{status}。
+- 评测上量 prepare_dataset --golden-only(缓存 4000 段扩到 600 查询不重嵌)：dense 0.903±0.018 vs hybrid 0.888±0.018，CI 由±0.099→±0.018；诚实：大样本 dense≈hybrid(小样本假象)，拉开靠 rerank。
+测试 180 单测(新增 cost/cache-redis/ratelimit-redis/session-redis/from_dict) + 13 集成。

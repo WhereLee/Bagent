@@ -1,0 +1,54 @@
+# M13 SLO 记录 + 告警规则（Prometheus）。加载：prometheus rule_files 指向本文件。
+# 依据真实指标：bagent_http_request_seconds(直方图)、bagent_http_requests_total、
+# bagent_retrieval_cache_total、bagent_cost_degraded_total、bagent_llm_fallbacks_total。
+groups:
+  - name: bagent_slo_recording
+    interval: 30s
+    rules:
+      - record: job:bagent_http_error_ratio:5m
+        expr: |
+          sum(rate(bagent_http_requests_total{status=~"5.."}[5m]))
+          / clamp_min(sum(rate(bagent_http_requests_total[5m])), 1e-9)
+      - record: job:bagent_p95_latency_seconds:5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(bagent_http_request_seconds_bucket[5m])))
+      - record: job:bagent_cache_hit_ratio:15m
+        expr: |
+          sum(rate(bagent_retrieval_cache_total{result="hit"}[15m]))
+          / clamp_min(sum(rate(bagent_retrieval_cache_total[15m])), 1e-9)
+
+  - name: bagent_slo_alerts
+    rules:
+      # 可用性 SLO：错误率 < 1%（5m），burn rate 触发
+      - alert: BagentHighErrorRatio
+        expr: job:bagent_http_error_ratio:5m > 0.01
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "Bagent 错误率超 SLO(1%)"
+          description: "5m 错误率 {{ $value | humanizePercentage }}，已消耗 error budget。"
+      # 延迟 SLO：p95 < 3s（本仓 CPU rerank 是瓶颈，阈值按实测校准）
+      - alert: BagentHighP95Latency
+        expr: job:bagent_p95_latency_seconds:5m > 3
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Bagent p95 延迟超 3s"
+          description: "p95={{ $value }}s；多为 CPU rerank 受限，考虑降 candidate_n 或上独立推理。"
+      # 成本降级激增：预算频繁触发降级，说明流量/配置失衡
+      - alert: BagentCostDegradationHigh
+        expr: sum(rate(bagent_cost_degraded_total[5m])) > 0.1
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: "成本降级请求占比升高"
+          description: "近期超 token 预算被降级的请求比例上升，核对 request_token_budget 或上下文长度。"
+      # provider 韧性：降级到备链频繁
+      - alert: BagentLLMFallbackSpike
+        expr: sum(rate(bagent_llm_fallbacks_total[5m])) > 0.05
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "LLM 主 provider 频繁降级"
+          description: "主 provider 不可用增多，检查 DeepSeek 限额/网络。"

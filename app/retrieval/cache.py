@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 from collections import OrderedDict
@@ -55,15 +57,57 @@ class RetrievalCache:
         return len(self._data)
 
 
-_cache: RetrievalCache | None = None
+class RedisCache:
+    """后端为 Redis 的检索缓存（跨进程/多 worker 共享，避免缓存戳化）。
+
+    值约定为 JSON 可列（调用方存 list[dict]）；接口与 RetrievalCache 一致。client 可注入以便单测。"""
+    _PREFIX = "bagent:rc:"
+
+    def __init__(self, client, ttl: float) -> None:
+        self.r = client
+        self.ttl = float(ttl)
+        self.hits = 0
+        self.misses = 0
+
+    def _k(self, key: Hashable) -> str:
+        return self._PREFIX + hashlib.sha1(repr(key).encode()).hexdigest()
+
+    def get(self, key):
+        raw = self.r.get(self._k(key))
+        if raw is None:
+            self.misses += 1
+            return None
+        self.hits += 1
+        return json.loads(raw)
+
+    def put(self, key, value) -> None:
+        if self.ttl <= 0:
+            return
+        self.r.setex(self._k(key), int(self.ttl), json.dumps(value, ensure_ascii=False))
+
+    def clear(self) -> None:
+        # 按前缀扫描删除（不用 FLUSHDB，避免误伤同实例其他键）
+        for k in self.r.scan_iter(match=self._PREFIX + "*", count=200):
+            self.r.delete(k)
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self.r.scan_iter(match=self._PREFIX + "*", count=1000))
 
 
-def get_retrieval_cache() -> RetrievalCache:
+_cache: "RetrievalCache | RedisCache | None" = None
+
+
+def get_retrieval_cache():
     global _cache
     if _cache is None:
         from app.config import get_settings
         s = get_settings()
-        _cache = RetrievalCache(s.retrieval_cache_max, s.retrieval_cache_ttl)
+        if s.redis_url:
+            import redis
+            _cache = RedisCache(redis.Redis.from_url(s.redis_url, decode_responses=True),
+                                ttl=s.retrieval_cache_ttl)
+        else:
+            _cache = RetrievalCache(s.retrieval_cache_max, s.retrieval_cache_ttl)
     return _cache
 
 

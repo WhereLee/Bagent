@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from app.config import get_settings
+from app.generation.budget import should_degrade
 from app.generation.citation import split_valid_invalid, strip_invalid_citations
 from app.generation.faithfulness import REFUSAL_PHRASE, assess_faithfulness
 from app.generation.llm import LLMUnavailable, get_llm
@@ -11,7 +12,7 @@ from app.generation.prompts import SYSTEM_BASE, SYSTEM_CITED
 from app.generation.rewriter import rewrite_query
 from app.generation.conflict import detect_conflict
 from app.observability.logging import get_logger, log_event
-from app.observability.metrics import RAG_QUALITY, STAGE_LATENCY
+from app.observability.metrics import COST_DEGRADED, RAG_QUALITY, STAGE_LATENCY
 from app.retrieval.retriever import retrieve
 from app.retrieval.selfrag import retrieve_with_reflection
 from app.retrieval.store import RetrievedChunk
@@ -40,6 +41,7 @@ class Answer:
     evidence_sufficient: bool | None = None
     conflict: bool = False
     conflict_note: str = ""
+    degraded: bool = False     # M13：超成本预算已降级(rerank/忠实度/条数)
 
 
 def _build_context(chunks: list[RetrievedChunk], guard: bool = False) -> str:
@@ -112,6 +114,20 @@ def answer_query(
         log_event(_log, "warning", "injection_detected_in_query")
         query = sanitize_query(query)
 
+    # 0) 成本预算：预估超预算则降级（缩 top_k、跳 rerank、关忠实度）
+    degraded = False
+    eff_top_k = top_k or s.retrieval_top_k
+    do_rerank: bool | None = None
+    if should_degrade(eff_top_k, s.request_token_budget):
+        degraded = True
+        eff_top_k = min(eff_top_k, s.degraded_top_k)
+        if s.degrade_skip_rerank:
+            do_rerank = False
+        if s.degrade_skip_faithfulness:
+            check_faith = False
+        COST_DEGRADED.inc()
+        log_event(_log, "info", "cost_degraded", top_k=eff_top_k, budget=s.request_token_budget)
+
     # 1) 多轮改写（有历史才做）
     rewritten = rewrite_query(query, history or [], get_llm()) if (history and s.rewrite_enabled) else query
 
@@ -122,11 +138,11 @@ def answer_query(
             rewritten, top_k=top_k, max_iters=s.self_rag_max_iters, llm=get_llm(), tenant=tenant
         )
     else:
-        chunks = retrieve(rewritten, top_k=top_k, tenant=tenant)
+        chunks = retrieve(rewritten, top_k=eff_top_k, rerank=do_rerank, tenant=tenant)
     if not chunks:
         return Answer(query=query, rewritten_query=rewritten, text=REFUSAL_MSG,
                       sources=[], is_refusal=True, self_rag_applied=use_self_rag,
-                      iterations=sr_meta["iterations"])
+                      iterations=sr_meta["iterations"], degraded=degraded)
 
     # 3) 生成（可选强制引用；citation 编号与检索列表 1:1）
     retrieval_context = _build_context(chunks, guard=guard)   # 仅 KB/联网，供忠实度判定
@@ -187,6 +203,7 @@ def answer_query(
     elif ans.grounded:
         RAG_QUALITY.labels(outcome="grounded").inc()
 
+    ans.degraded = degraded
     log_event(
         _log, "info", "rag_query",
         refusal=ans.is_refusal, grounded=ans.grounded, low_confidence=ans.low_confidence,

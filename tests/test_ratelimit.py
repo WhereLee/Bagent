@@ -55,3 +55,22 @@ def test_invalid_params_raise():
         RateLimiter(rate=0, burst=5)
     with pytest.raises(ValueError):
         RateLimiter(rate=5, burst=0)
+
+
+class _FakeIncr:
+    def __init__(self): self.store = {}
+    def incr(self, k):
+        self.store[k] = self.store.get(k, 0) + 1
+        return self.store[k]
+    def expire(self, k, sec): pass
+
+
+def test_redis_rate_limiter_window():
+    from app.ratelimit import RedisRateLimiter
+    t = {"now": 1000.0}
+    rl = RedisRateLimiter(_FakeIncr(), rate=5, burst=0, clock=lambda: t["now"])
+    assert all(rl.allow("ip1")[0] for _ in range(5))     # 窗口内放行 5
+    ok, retry = rl.allow("ip1")
+    assert ok is False and retry > 0
+    t["now"] = 1001.0                                      # 换一秒窗口
+    assert rl.allow("ip1")[0] is True

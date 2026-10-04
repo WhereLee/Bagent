@@ -126,3 +126,37 @@ def test_publish_writes_draft_knowledge(monkeypatch):
                     embedder=Emb(), tenant="T")
     assert n == 1 and added["scope"] == "knowledge" and added["trust"] == "draft" and added["tenant_id"] == "T"
     assert added["level"] == "fact" and "tags" in added
+
+
+def test_doc_from_dict_roundtrip():
+    from app.research.doc import Claim, Reference, ResearchDoc, Section
+    doc = ResearchDoc(topic="T", abstract="A", outline=["s1"],
+                      sections=[Section(title="s1", body="b[1]", cites=[1])],
+                      references=[Reference(id=1, source="u", url="http://u")],
+                      claims=[Claim(text="c", reference_ids=[1])], conflicts=[{"explanation": "x"}],
+                      meta={"type": "活动"})
+    back = ResearchDoc.from_dict(doc.to_dict())
+    assert back.to_dict() == doc.to_dict()
+
+
+class _FakeRedis:
+    def __init__(self): self.store = {}
+    def get(self, k): return self.store.get(k)
+    def setex(self, k, ttl, v): self.store[k] = v
+    def delete(self, k): self.store.pop(k, None)
+    def scan_iter(self, match=None, count=None):
+        pre = (match or "*").rstrip("*")
+        return iter([x for x in list(self.store) if x.startswith(pre)])
+
+
+def test_session_redis_store_roundtrip():
+    from app.research import session
+    from app.research.doc import ResearchDoc, Section
+    session.set_store(session._RedisStore(_FakeRedis()))
+    try:
+        sid = session.create(ResearchDoc(topic="文昌", sections=[Section(title="s", body="b")]), tenant="T1")
+        got = session.get(sid, tenant="T1")
+        assert got is not None and got.topic == "文昌"
+        assert session.get(sid, tenant="OTHER") is None   # 跨租户不可读
+    finally:
+        session.set_store(None)

@@ -39,3 +39,6 @@ onnxruntime>=1.17,<1.31
 # ---- Testing ----
 pytest>=8.3,<9
 pytest-asyncio>=0.24,<1
+
+# M13 共享状态外部化（可选：设 REDIS_URL 时启用；未设则进程内存）
+redis>=5.0,<6

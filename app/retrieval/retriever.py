@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from app.config import get_settings
 from app.db.session import get_session
 from app.ingestion.embedder import get_embedder
@@ -45,7 +47,7 @@ def retrieve(
         cached = cache.get(key)
         if cached is not None:
             RETRIEVAL_CACHE.labels(result="hit").inc()
-            return list(cached)   # 返回拷贝：防调用方(如 self-RAG append)污染缓存
+            return [RetrievedChunk(**d) for d in cached]   # 重建对象：既跨后端统一又防调用方污染缓存
         RETRIEVAL_CACHE.labels(result="miss").inc()
 
     qvec = get_embedder().encode_query(query)
@@ -92,7 +94,7 @@ def retrieve(
                 n_hits=len(top), top_score=round(top[0].score, 4) if top else None,
             )
             if cache is not None and key is not None:
-                cache.put(key, list(top))
+                cache.put(key, [asdict(c) for c in top])   # 存 dict 列表（Redis 需 JSON 可列）
             return list(top)
         finally:
             session.close()

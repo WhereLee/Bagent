@@ -106,6 +106,16 @@ class Settings(BaseSettings):
     retrieval_cache_max: int = 256
     retrieval_cache_ttl: int = 300    # 秒；且写入/删除时主动失效
 
+    # --- 共享状态外部化 (M13: 多 worker/多实例) ---
+    # 置空=进程内存(单实例)；设置=Redis，跨进程共享缓存/限流/研究会话（状态一致性，非提 rerank 吞吐）
+    redis_url: str = ""
+
+    # --- Cost budget / 降级 (M13) ---
+    request_token_budget: int = 0     # 单次请求 token 预算(0=不限)；>0 且预估超预算则降级
+    degraded_top_k: int = 3           # 降级时缩小的检索条数
+    degrade_skip_rerank: bool = True  # 降级时跳过 rerank(省 CPU)
+    degrade_skip_faithfulness: bool = True  # 降级时省一次忠实度 LLM 调用
+
     # --- Security (M6) ---
     api_key: str = ""                 # 非空则启用 /query /search 等鉴权
     prompt_injection_guard: bool = True

@@ -111,6 +111,9 @@ tests/  docs/  models/
 - **M11(P2) ✅**：MiMo **端到端真验**（确认返回为平铺 `url_citation`、摘要字段实为 `summary`，修解析+回归测试）+ **wiki 沉淀** `/research/{sid}/publish`（论断→knowledge 记忆 draft，受同一 trust 门控）+ **agent 循环接入 `/query`**（`agent=true` 走工具循环产带依据答案）。
 - **M12 产品锚定 ✅**：把引擎向上定成**“组织经验复用 + 联网补全 + 对话打磨 + 复盘回写”闭环**（`docs/M12-*.md`）。**P3-A 经验分层**(fact/playbook+tags；含可复用评测——诚实证伪：扁平时优，不塞更差启发式) + **P3-B 复盘整体归档**(Event 实体 + `event_playbook`)。
 
+- **M12 P3-C ✅**：**结果回标**（`/memory/feedback`：use_success/use_fail 驱动 outcome_action 促升/作废），用“用过成没成”补强“多源一致≠真相”。
+- **M13 生产化+上量 ✅**：**成本预算与自动降级**(`request_token_budget`超预算缩top_k/跳rerank/关忠实度, `Answer.degraded`+`COST_DEGRADED`) + **共享状态外部化 Redis**(检索缓存/限流固定窗口/研究会话均可切，接口不变，默认内存) + **SLO/告警**(`deploy/prometheus/slo.rules.yml`+`docs/SLO.md`) + **评测上量 n=600**。
+
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
 基于 `data/golden/golden.jsonl`（14 条覆盖 3 篇可混淆手册的标注）：
@@ -167,7 +170,8 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 
 - **集成测试进 CI**：`integration-tests` job 用 `pgvector/pgvector:pg16` 服务容器，跑 `tests/integration/test_retrieval_e2e.py`：真库入库→dense/hybrid 召回正确源→**删除后两路都不再召回**。unit job 改为 `-m "not integration"`（保持秒级）。CI 现共 4 job。
 - **注入对抗测试**：`tests/test_injection_adversarial.py` 用一批真实 payload 验证“防护真拦得住”（含发现并补全了 `new instructions:` 漏网模式）。
-- **bootstrap 置信区间**：`app/evaluation/stats.py` + `eval_benchmark` 输出“均值±95%CI”，不再报单点。实测 dense recall@10 0.859±0.099 vs hybrid 0.889±0.065。
+- **bootstrap 置信区间**：`app/evaluation/stats.py` + `eval_benchmark` 输出“均值±95%CI”，不再报单点。
+- **评测上量（M13）**：查询样本从 80→**600**（同 4000 段语料，doc级 K=10，`--golden-only` 复用本地缓存不重嵌）：dense recall@10 **0.903±0.018**、hybrid **0.888±0.018**——CI 由旧小样本的 ±0.099 收窄到 ±0.018。**诚实结论：大样本下 dense 与 hybrid 统计上打平**（差 0.015＜半CI），M5“hybrid 更优”是小样本假象；真正拉分的是 rerank（M5 hybrid+rerank c20 mrr 0.988，未在 600 上重跑，如实标注）。（更大语料维度如 T2Ranking 仍为延后项。）
 - **RGB 子集**：`eval_rgb.py` 扩展 counterfactual/integration。**诚实发现**：反事实集上“只信上下文”的严格 grounding 会被**错误文档 100% 带偏**（复述谬误）——纯 RAG 的固有软肋，也是为何需要自检式/多源佐证检索（③）。
 
 ## 受控联网与 MCP（P1）

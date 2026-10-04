@@ -64,10 +64,10 @@ def _load_raw(n_passages: int) -> tuple[dict, dict, dict]:
     return passages, q_txt, qrels
 
 
-def build(queries: int, passages_n: int, fresh: bool = False) -> None:
+def build(queries: int, passages_n: int, fresh: bool = False, golden_only: bool = False) -> None:
     configure_logging(get_settings().log_level)
     init_schema()
-    if fresh:
+    if fresh and not golden_only:
         s0 = get_session()
         try:
             from sqlalchemy import text as _text
@@ -83,32 +83,33 @@ def build(queries: int, passages_n: int, fresh: bool = False) -> None:
     rng.shuffle(eligible)
     chosen_q = eligible[:queries]
 
-    # 入库（每段落一个文档，source=pid）
-    embedder = get_embedder()
-    s = get_settings()
-    session = get_session()
     n_child = 0
-    try:
-        for pid, text in passages.items():
-            if not text.strip():
-                continue
-            parents = chunk_parent_child(text, parent_tokens=s.chunk_parent_tokens,
-                                        child_tokens=s.chunk_child_tokens, child_overlap=s.chunk_child_overlap)
-            child_texts = [c.text for p in parents for c in p.children]
-            if not child_texts:
-                parents = chunk_parent_child(text, parent_tokens=s.chunk_parent_tokens, child_tokens=300, child_overlap=0)
+    if not golden_only:
+        # 入库（每段落一个文档，source=pid）
+        embedder = get_embedder()
+        s = get_settings()
+        session = get_session()
+        try:
+            for pid, text in passages.items():
+                if not text.strip():
+                    continue
+                parents = chunk_parent_child(text, parent_tokens=s.chunk_parent_tokens,
+                                            child_tokens=s.chunk_child_tokens, child_overlap=s.chunk_child_overlap)
                 child_texts = [c.text for p in parents for c in p.children]
                 if not child_texts:
-                    continue
-            vectors = embedder.encode_documents(child_texts)
-            _index_multi(session, pid, text, vectors, parents)
-            n_child += len(child_texts)
-            session.commit()  # 每文档提交，缩短事务
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+                    parents = chunk_parent_child(text, parent_tokens=s.chunk_parent_tokens, child_tokens=300, child_overlap=0)
+                    child_texts = [c.text for p in parents for c in p.children]
+                    if not child_texts:
+                        continue
+                vectors = embedder.encode_documents(child_texts)
+                _index_multi(session, pid, text, vectors, parents)
+                n_child += len(child_texts)
+                session.commit()  # 每文档提交，缩短事务
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     out = ROOT_DIR / "data" / "benchmark"
     out.mkdir(parents=True, exist_ok=True)
@@ -119,7 +120,7 @@ def build(queries: int, passages_n: int, fresh: bool = False) -> None:
             f.write(json.dumps({"question": q_txt[qid], "relevant_sources": rel}, ensure_ascii=False) + "\n")
             n_written += 1
 
-    print(f"语料段落={len(passages)} 子块≈{n_child} golden查询={n_written}", flush=True)
+    print(f"语料段落={len(passages)} 子块≈{n_child} golden查询={n_written}" + ("  [golden-only]" if golden_only else ""), flush=True)
 
 
 def _index_multi(session, pid: str, text: str, vectors, parents) -> None:
@@ -157,5 +158,6 @@ if __name__ == "__main__":
     ap.add_argument("--queries", type=int, default=80)
     ap.add_argument("--passages", type=int, default=1200)
     ap.add_argument("--fresh", action="store_true", help="先清空 bench 库再重建")
+    ap.add_argument("--golden-only", action="store_true", help="不重嵌/不入库，仅从本地缓存扩写 duretrieval.jsonl")
     a = ap.parse_args()
-    build(a.queries, a.passages, a.fresh)
+    build(a.queries, a.passages, a.fresh, a.golden_only)

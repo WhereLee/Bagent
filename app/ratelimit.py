@@ -58,3 +58,39 @@ class RateLimiter:
 
     def allow(self, key: str) -> tuple[bool, float]:
         return self._bucket(key).allow()
+
+
+class RedisRateLimiter:
+    """跨进程共享的固定窗口限流（多 worker 下全局生效）。
+
+    与内存令牌桶语义近似但不完全等价（窗口边界会放过 1~2x 突发）；单实例仍用内存
+    令牌桶更平滑。接口 `allow(key)->(bool, retry_sec)` 与 RateLimiter 一致。client 可注入以便单测。
+    """
+    _PREFIX = "bagent:rl:"
+
+    def __init__(self, client, rate: float, burst: int, clock=time.time) -> None:
+        self.r = client
+        self.rate = float(rate)
+        self.burst = int(burst)
+        self._clock = clock
+
+    def allow(self, key: str) -> tuple[bool, float]:
+        win = int(self._clock())               # 1 秒窗口
+        limit = int(self.rate) + self.burst    # 该窗口允许量
+        rk = f"{self._PREFIX}{key}:{win}"
+        count = self.r.incr(rk)
+        if count == 1:
+            self.r.expire(rk, 2)
+        if count <= limit:
+            return True, 0.0
+        return False, float(win + 1 - self._clock())
+
+
+def get_rate_limiter():
+    from app.config import get_settings
+    s = get_settings()
+    if s.redis_url:
+        import redis
+        return RedisRateLimiter(redis.Redis.from_url(s.redis_url, decode_responses=True),
+                                s.rate_limit_per_sec, s.rate_limit_burst)
+    return RateLimiter(s.rate_limit_per_sec, s.rate_limit_burst)

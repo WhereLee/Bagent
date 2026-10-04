@@ -23,7 +23,7 @@ from app.memory.writeback import run_writeback
 from app.observability.logging import configure_logging, get_logger
 from app.observability.metrics import render_metrics
 from app.observability.middleware import ObservabilityMiddleware
-from app.ratelimit import RateLimiter
+from app.ratelimit import RateLimiter, get_rate_limiter
 from app.retrieval.retriever import retrieve
 from app.retrieval.cache import get_retrieval_cache
 from app.retrieval.store import delete_document
@@ -44,7 +44,7 @@ app = FastAPI(title="Bagent RAG", version="0.1.0", lifespan=_lifespan)
 
 _s = get_settings()
 if _s.rate_limit_enabled:
-    _limiter: RateLimiter | None = RateLimiter(_s.rate_limit_per_sec, _s.rate_limit_burst)
+    _limiter: RateLimiter | None = get_rate_limiter() if _s.rate_limit_enabled else None
 else:
     _limiter = None
 app.add_middleware(ObservabilityMiddleware, limiter=_limiter, api_key=(_s.api_key or None),
