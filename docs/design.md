@@ -190,9 +190,9 @@ Reranker 增 OnnxReranker 后端（同 .rerank 接口，喂 input_ids/attention_
 
 ## 21. P0 写回记忆抗污染 A/B（含自曝边界）
 先重审原计划、补回被简化的降级：三臂(A0记忆关/A1 naive/A2门控)+合谋泄漏臂(A2b)、四类判定(把"同时给对错值"识别为主动暴露冲突而非污染)、双场景(conflict / kb_silent)、n 提到~100程序化生成+每探针重复压 LLM 抖动、隔离库 bagent_exp。
-关键发现1(设计缺陷自我纠正)：只测 conflict(KB 有真相)会得到"污染恒 0%"的**无区分度**结果——因为真相当场、错误值翻不了车；真正的风险在 **kb_silent**(库无该事实、写回记忆是唯一来源)，naive 83.3%±20.8 污染 → 门控 0%(安全拒答) → 合谋促升 50% 泄漏。
+关键发现1(设计缺陷自我纠正)：只测 conflict(KB 有真相)会得到"污染恒 0%"的**无区分度**结果——因为真相当场、错误值翻不了车；真正的风险在 **kb_silent**(库无该事实、写回记忆是唯一来源)，naive 68.3%±11.7 污染 → 门控 0%(安全拒答) → 合谋促升 73.3% 泄漏（n=60）。
 关键发现2(真缺口)：knowledge 记忆此前只写不读，/query 仅召回 personal → "防污染门控"守的是空路径；已修：_memory_context 同时按 trust 召回 personal+knowledge。
-边界(不粉饰)：多源佐证≠真相，两个都错且一致会被促升绕过门控(50%)→ 需来源真实性/多样性、促升人工确认。
+边界(不粉饰)：多源佐证≠真相，两个都错且一致会被促升绕过门控(73.3%)→ 需来源真实性/多样性、促升人工确认。
 
 ## 22. P1 受控联网(MiMo) + 共享工具/MCP
 成本护栏(用户明确)：主生成 LLM(DeepSeek/MiMo) 绝不挂 web_search——按量模型联网几乎必然 cache-miss→成本暴涨。联网只两条受控检索路径：SearxNG(自架/零token/主用) + MiMoWebProvider(MiMo联网插件, 按次计费, 由 SEARCH_FALLBACK 在主源空/错时降级; 独立检索调用非主模型自决)。MiMo 返回取 url_citation annotations + 正文链接兜底归一 SearchResult→既有 SSRF/清洗。WEB_SEARCH 指标按 provider 计量。
@@ -207,7 +207,7 @@ app/evaluation/trajectory.py：收敛率(status=final)/非法动作率/平均步
 - MiMo provider 真调验证(verify_mimo_provider.py)：返回 message.annotations 为**平铺 url_citation**（非嵌套），字段 url/title/**summary**/site_name；解析器原取 snippet/content→摘要全空，已修(优先 summary)并加回归 test_mimo_parse_annotations。
 - wiki 沉淀 app/research/publish.py：claims_to_facts(纯映射) + publish→ add_memory(scope=knowledge,trust=draft)。/research/{sid}/publish 端点。走 P0 同一 trust 门控：draft 不直接进作答，需佐证/人工促升——"沉淀"与"防污染"不矛盾。
 - agent 入 /query：query 加 agent=true → _query_agent 走 run_agent(工具=受控 kb_search/web_search)，返回 final+sources+轨迹指标。主 LLM 仍不隐式联网。
-测试 168 单测。n=100 污染确认跑后台进行中，终稿数出后刷新 §21/README。
+测试 168 单测。n=60 污染确认跑已完成：kb_silent naive 68.3%±11.7 → 门控 0% → 合谋 73.3%，已刷新 §21/README。
 
 ## 25. P3-A 经验分层（含自我证伪）
 落地 memories.level(fact|playbook)+tags(JSONB) 基础设施、search_memories 按 level/标签(@>)过滤、find_similar 同域、抽取与 publish 按内容启发式打 level、_memory_context 分块呈现。
