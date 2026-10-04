@@ -212,3 +212,6 @@ app/evaluation/trajectory.py：收敛率(status=final)/非法动作率/平均步
 ## 25. P3-A 经验分层（含自我证伪）
 落地 memories.level(fact|playbook)+tags(JSONB) 基础设施、search_memories 按 level/标签(@>)过滤、find_similar 同域、抽取与 publish 按内容启发式打 level、_memory_context 分块呈现。
 诚实评测(eval_experience_reuse.py，本地 bge、K=3、n=5)：跨场景可迁移 playbook 命中率 **扁平语义 1.00 vs 分层保底槽 0.60** —— 我的"给 playbook 保留召回槽"启发式**反而更差**（argmax 选错 playbook）。结论：不将该检索启发式并入产品；level/tags 只作**过滤/溯源/呈现**（真实有用、已过测试）。分层是否真提升可复用，需更对抗/真实的语料再判，此处不硬凑正向数。这是"评测证伪自己"的示范。
+
+## 26. P3-B 复盘整体归档（Event）
+events 表(name/type/tags/summary/created_by) + memories.event_id 关联。store.create_event / get_event / list_memories(event_id) / event_playbook(event_id)→{event, playbook[], facts[]}。publish 接受 event_id（可按 event_name 自动建）。API：POST /events、GET /events/{id}/playbook、/research/{sid}/publish 带事件归属。把"一次对话/活动"归成整份可检索可引用的经验档案，补上"复盘整体归档"这块。测试 12 集成含事件档案。

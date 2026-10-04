@@ -18,7 +18,7 @@ from app.ingestion.indexer import ingest_file
 from app.db.session import get_session
 from app.tenant import TenantError, resolve_tenant
 from app.memory.store import invalidate as mem_invalidate
-from app.memory.store import list_memories, set_trust
+from app.memory.store import create_event, event_playbook, list_memories, set_trust
 from app.memory.writeback import run_writeback
 from app.observability.logging import configure_logging, get_logger
 from app.observability.metrics import render_metrics
@@ -354,15 +354,51 @@ def agent_run(req: AgentReq, request: Request) -> dict:
 
 
 @app.post("/research/{sid}/publish")
-def research_publish_endpoint(sid: str, request: Request) -> dict:
-    """把研究文档的论断沉淀为 knowledge 记忆（draft，受 trust 门控，不直接污染作答）。"""
+def research_publish_endpoint(sid: str, request: Request, body: dict | None = None) -> dict:
+    """把研究文档的论断沉淀为 knowledge 记忆（draft）；可归属到一个事件(不存在则新建)。"""
     tenant = _tenant_of(request)
     doc = research_session.get(sid, tenant=tenant)
     if doc is None:
         raise HTTPException(status_code=404, detail="session not found")
+    body = body or {}
     session = get_session()
     try:
-        added = research_publish(doc, session=session, embedder=get_embedder(), tenant=tenant)
+        event_id = body.get("event_id")
+        if not event_id and body.get("event_name"):
+            ev = create_event(session, name=body["event_name"], type=body.get("event_type"),
+                              created_by=body.get("created_by"))
+            event_id = ev.id
+        added = research_publish(doc, session=session, embedder=get_embedder(),
+                                tenant=tenant, event_id=event_id)
+        session.commit()
     finally:
         session.close()
-    return {"session_id": sid, "published": added, "trust": "draft"}
+    return {"session_id": sid, "published": added, "event_id": event_id, "trust": "draft"}
+
+
+class EventReq(BaseModel):
+    name: str
+    type: str | None = None
+    created_by: str | None = None
+
+
+@app.post("/events")
+def events_create(req: EventReq, request: Request) -> dict:
+    _tenant_of(request)
+    session = get_session()
+    try:
+        ev = create_event(session, name=req.name, type=req.type, created_by=req.created_by)
+        session.commit()
+        return {"id": ev.id, "name": ev.name, "type": ev.type}
+    finally:
+        session.close()
+
+
+@app.get("/events/{event_id}/playbook")
+def events_playbook(event_id: int, request: Request) -> dict:
+    _tenant_of(request)
+    session = get_session()
+    try:
+        return event_playbook(session, event_id)
+    finally:
+        session.close()

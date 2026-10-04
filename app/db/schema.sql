@@ -74,3 +74,17 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id TEXT;
 -- 幂等：P3-A 经验分层与标签
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS level TEXT NOT NULL DEFAULT 'fact';
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- P3-B 事件/复盘实体：把一次活动的方案/决策/踩坑归成整份可检索可引用的经验档案
+CREATE TABLE IF NOT EXISTS events (
+    id          BIGSERIAL PRIMARY KEY,
+    name        TEXT        NOT NULL,
+    type        TEXT,                            -- 活动/年会/策划/复盘/事故...
+    tags        JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    summary     TEXT,
+    created_by  TEXT,
+    occurred_at TIMESTAMPTZ,
+    is_deleted  BOOLEAN     NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS event_id BIGINT REFERENCES events(id);

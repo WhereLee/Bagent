@@ -95,3 +95,21 @@ def test_level_and_tag_filter(owner):
         assert miss == []
     finally:
         s.rollback(); s.close()
+
+
+def test_event_archive_playbook(owner):
+    s = get_session()
+    try:
+        ev = ms.create_event(s, name="骑到文昌复盘", type="活动", created_by=owner)
+        s.flush()
+        ms.add_memory(s, scope="knowledge", content="重大活动必做风险预案", embedding=_v("风险预案"),
+                      trust="verified", level="playbook", event_id=ev.id)
+        ms.add_memory(s, scope="knowledge", content="文昌露营点A", embedding=_v("露营点"),
+                      trust="verified", level="fact", event_id=ev.id)
+        s.commit()
+        pb = ms.event_playbook(s, ev.id)
+        assert pb["event"]["name"] == "骑到文昌复盘"
+        assert pb["playbook"] == ["重大活动必做风险预案"]
+        assert any(f["content"] == "文昌露营点A" for f in pb["facts"])
+    finally:
+        s.rollback(); s.close()

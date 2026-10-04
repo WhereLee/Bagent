@@ -8,7 +8,7 @@ import numpy as np
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app.db.models import Memory
+from app.db.models import Event, Memory
 from app.memory.lifecycle import TRUST_RANK
 
 
@@ -27,6 +27,7 @@ def add_memory(
     trust: str = "draft", confidence: float = 0.5,
     valid_at: datetime | None = None, invalid_at: datetime | None = None,
     tenant_id: str | None = None, level: str = "fact", tags: dict | None = None,
+    event_id: int | None = None,
 ) -> tuple[Memory, bool]:
     """写入一条记忆；按 (tenant, scope, owner, content_hash) 分域幂等去重。"""
     h = content_hash(content)
@@ -45,7 +46,7 @@ def add_memory(
         content_hash=h, source_type=source_type, source_ref=source_ref,
         trust=trust, confidence=confidence, support=1, embedding=emb,
         valid_at=valid_at, invalid_at=invalid_at, tenant_id=tenant_id,
-        level=level, tags=tags or {},
+        level=level, tags=tags or {}, event_id=event_id,
     )
     session.add(row)
     session.flush()
@@ -147,13 +148,40 @@ def invalidate(session: Session, mem_id: int, invalid_at: datetime | None = None
 
 def list_memories(session: Session, *, scope: str | None = None,
                   owner_user_id: str | None = None, tenant: str | None = None,
-                  limit: int = 50) -> list[Memory]:
+                  event_id: int | None = None, limit: int = 50) -> list[Memory]:
     q = select(Memory).where(Memory.is_deleted == False)  # noqa: E712
     if tenant is not None:
         q = q.where(Memory.tenant_id == tenant)
+    if event_id is not None:
+        q = q.where(Memory.event_id == event_id)
     if scope:
         q = q.where(Memory.scope == scope)
     if owner_user_id:
         q = q.where(Memory.owner_user_id == owner_user_id)
     q = q.order_by(Memory.updated_at.desc()).limit(limit)
     return list(session.scalars(q).all())
+
+
+def create_event(session: Session, *, name: str, type: str | None = None,
+                 tags: dict | None = None, summary: str | None = None,
+                 created_by: str | None = None) -> Event:
+    ev = Event(name=name, type=type, tags=tags or {}, summary=summary, created_by=created_by)
+    session.add(ev)
+    session.flush()
+    return ev
+
+
+def get_event(session: Session, event_id: int) -> Event | None:
+    ev = session.get(Event, event_id)
+    return None if (ev is None or ev.is_deleted) else ev
+
+
+def event_playbook(session: Session, event_id: int) -> dict:
+    """整份事件经验档案：{event, playbook:[...], facts:[...]}。"""
+    ev = get_event(session, event_id)
+    mems = list_memories(session, event_id=event_id)
+    return {
+        "event": None if ev is None else {"id": ev.id, "name": ev.name, "type": ev.type, "summary": ev.summary},
+        "playbook": [m.content for m in mems if m.level == "playbook"],
+        "facts": [{"content": m.content, "source": m.source_ref, "trust": m.trust} for m in mems if m.level != "playbook"],
+    }

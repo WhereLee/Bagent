@@ -60,6 +60,7 @@ class Memory(Base):
     kind: Mapped[str] = mapped_column(String, default="fact")
     level: Mapped[str] = mapped_column(String, default="fact")   # fact | playbook
     tags: Mapped[dict] = mapped_column(JSONB, default=dict)      # type/location/season/...
+    event_id: Mapped[int | None] = mapped_column(BigInteger)
     content: Mapped[str] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(Text)
     source_type: Mapped[str] = mapped_column(String, default="research")
@@ -73,3 +74,18 @@ class Memory(Base):
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Event(Base):
+    """P3-B 事件/复盘：一次活动的经验档案容器（关联 memories.event_id）。"""
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    type: Mapped[str | None] = mapped_column(String)
+    tags: Mapped[dict] = mapped_column(JSONB, default=dict)
+    summary: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

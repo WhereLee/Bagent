@@ -27,7 +27,8 @@ def claims_to_facts(doc: ResearchDoc) -> list[dict]:
     return facts
 
 
-def publish(doc: ResearchDoc, *, session, embedder, tenant: str | None = None) -> int:
+def publish(doc: ResearchDoc, *, session, embedder, tenant: str | None = None,
+            event_id: int | None = None) -> int:
     """把论断写入 knowledge 记忆（trust=draft）。返回新增条数。"""
     from app.memory.store import add_memory
 
@@ -39,7 +40,8 @@ def publish(doc: ResearchDoc, *, session, embedder, tenant: str | None = None) -
     for f, v in zip(facts, vecs):
         _, is_new = add_memory(session, scope="knowledge", content=f["content"], embedding=v,
                               source_type="research", source_ref=f["source_ref"],
-                              trust="draft", tenant_id=tenant, level=f["level"], tags=f["tags"])
+                              trust="draft", tenant_id=tenant, level=f["level"], tags=f["tags"],
+                              event_id=event_id)
         added += int(is_new)
     session.commit()
     return added
