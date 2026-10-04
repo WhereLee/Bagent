@@ -67,7 +67,8 @@ def run_writeback(
             trust = "verified" if f.scope == "personal" else "draft"
             add_memory(session, scope=f.scope, content=f.content, embedding=vec,
                        owner_user_id=owner, kind=f.kind, source_type="research",
-                       source_ref=source_ref, trust=trust, tenant_id=tenant)
+                       source_ref=source_ref, trust=trust, tenant_id=tenant,
+                       level=f.level, tags=f.tags)
             summary["add"] += 1
 
     session.commit()

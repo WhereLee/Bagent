@@ -19,6 +19,12 @@ class Fact:
     content: str
     scope: str        # personal | knowledge
     kind: str = "fact"
+    level: str = "fact"   # fact | playbook
+    tags: dict = None     # type/location/...
+
+    def __post_init__(self):
+        if self.tags is None:
+            self.tags = {}
 
 
 def parse_facts(raw: str) -> list[Fact]:
@@ -41,7 +47,12 @@ def parse_facts(raw: str) -> list[Fact]:
         scope = str(it.get("scope", "knowledge")).strip().lower()
         if not content or scope not in _VALID_SCOPES:
             continue
-        out.append(Fact(content=content, scope=scope, kind=str(it.get("kind", "fact"))))
+        level = str(it.get("level", "fact")).strip().lower()
+        if level not in ("fact", "playbook"):
+            level = "fact"
+        tags = it.get("tags") if isinstance(it.get("tags"), dict) else {}
+        out.append(Fact(content=content, scope=scope, kind=str(it.get("kind", "fact")),
+                        level=level, tags=tags))
     return out
 
 

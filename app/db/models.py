@@ -58,6 +58,8 @@ class Memory(Base):
     tenant_id: Mapped[str | None] = mapped_column(String)
     owner_user_id: Mapped[str | None] = mapped_column(Text)
     kind: Mapped[str] = mapped_column(String, default="fact")
+    level: Mapped[str] = mapped_column(String, default="fact")   # fact | playbook
+    tags: Mapped[dict] = mapped_column(JSONB, default=dict)      # type/location/season/...
     content: Mapped[str] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(Text)
     source_type: Mapped[str] = mapped_column(String, default="research")

@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS memories (
     tenant_id     TEXT,                          -- ⑥ 租户隔离（数据面强制）
     owner_user_id TEXT,                          -- personal 必填；knowledge 为 NULL
     kind          TEXT        NOT NULL DEFAULT 'fact',  -- fact/preference/entity/claim
+    level         TEXT        NOT NULL DEFAULT 'fact',   -- P3-A: fact(具体) | playbook(可迁移打法)
+    tags          JSONB       NOT NULL DEFAULT '{}'::jsonb,  -- P3-A: type/location/season/difficulty 等
     content       TEXT        NOT NULL,
     content_hash  TEXT        NOT NULL,          -- 幂等去重
     source_type   TEXT        NOT NULL DEFAULT 'research',  -- kb/web/research/user
@@ -69,3 +71,6 @@ CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw
 
 -- 幂等：为已存在的 memories 表补上 tenant_id（⑥ 增量）
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+-- 幂等：P3-A 经验分层与标签
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS level TEXT NOT NULL DEFAULT 'fact';
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '{}'::jsonb;

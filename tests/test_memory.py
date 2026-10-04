@@ -52,3 +52,10 @@ def test_decide_op():
 ])
 def test_parse_facts(raw, expect):
     assert len(parse_facts(raw)) == expect
+
+
+def test_parse_facts_level_and_tags():
+    f = parse_facts('[{"content":"重大活动必做风险预案","scope":"knowledge","level":"playbook","tags":{"type":"活动"}}]')[0]
+    assert f.level == "playbook" and f.tags["type"] == "活动"
+    assert parse_facts('[{"content":"x","scope":"knowledge"}]')[0].level == "fact"   # 缺省
+    assert parse_facts('[{"content":"x","scope":"knowledge","level":"garbage"}]')[0].level == "fact"

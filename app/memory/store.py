@@ -26,7 +26,7 @@ def add_memory(
     source_type: str = "research", source_ref: str | None = None,
     trust: str = "draft", confidence: float = 0.5,
     valid_at: datetime | None = None, invalid_at: datetime | None = None,
-    tenant_id: str | None = None,
+    tenant_id: str | None = None, level: str = "fact", tags: dict | None = None,
 ) -> tuple[Memory, bool]:
     """写入一条记忆；按 (tenant, scope, owner, content_hash) 分域幂等去重。"""
     h = content_hash(content)
@@ -45,6 +45,7 @@ def add_memory(
         content_hash=h, source_type=source_type, source_ref=source_ref,
         trust=trust, confidence=confidence, support=1, embedding=emb,
         valid_at=valid_at, invalid_at=invalid_at, tenant_id=tenant_id,
+        level=level, tags=tags or {},
     )
     session.add(row)
     session.flush()
@@ -93,9 +94,10 @@ def find_similar(session: Session, vec, *, scope: str, owner_user_id: str | None
 
 def search_memories(session: Session, vec, *, scope: str | None = None,
                     owner_user_id: str | None = None, tenant: str | None = None,
+                    level: str | None = None, any_tags: dict | None = None,
                     min_trust: str = "verified",
                     k: int = 3, now: datetime | None = None) -> list[Memory]:
-    """按向量取记忆，且只返回：未删 + trust>=min_trust + 此刻有效 + 本租户。"""
+    """按向量取记忆：未删 + trust>=min_trust + 此刻有效 + 本租户 (+可选 level/标签过滤)。"""
     now = now or datetime.now(timezone.utc)
     allowed = [t for t, r in TRUST_RANK.items() if r >= TRUST_RANK.get(min_trust, 1)]
     q = select(Memory).where(
@@ -107,6 +109,10 @@ def search_memories(session: Session, vec, *, scope: str | None = None,
     )
     if tenant is not None:
         q = q.where(Memory.tenant_id == tenant)
+    if level is not None:
+        q = q.where(Memory.level == level)
+    if any_tags:
+        q = q.where(Memory.tags.contains(any_tags))   # JSONB @> 包含
     if scope is not None:
         q = q.where(Memory.scope == scope)
     if owner_user_id is not None:

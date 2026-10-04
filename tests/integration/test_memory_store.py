@@ -73,3 +73,25 @@ def test_promote_and_invalidate(owner):
         assert s.get(ms.Memory, mid).invalid_at is not None
     finally:
         s.rollback(); s.close()
+
+
+def test_level_and_tag_filter(owner):
+    s = get_session()
+    try:
+        ms.add_memory(s, scope="knowledge", content="重大活动必做风险预案" + owner,
+                      embedding=_v("重大活动必做风险预案"), trust="verified",
+                      level="playbook", tags={"type": "活动"})
+        ms.add_memory(s, scope="knowledge", content="文昌老街坐标" + owner,
+                      embedding=_v("文昌老街的位置"), trust="verified", level="fact", tags={"location": "文昌"})
+        s.commit()
+        pb = ms.search_memories(s, _v("活动该注意什么"), scope="knowledge", level="playbook",
+                               min_trust="verified", k=5)
+        assert all(m.level == "playbook" for m in pb) and pb
+        tagged = ms.search_memories(s, _v("老街"), scope="knowledge", any_tags={"location": "文昌"},
+                                    min_trust="verified", k=5)
+        assert any("文昌老街" in m.content for m in tagged)
+        miss = ms.search_memories(s, _v("任意"), scope="knowledge", any_tags={"location": "不存在"},
+                                 min_trust="verified", k=5)
+        assert miss == []
+    finally:
+        s.rollback(); s.close()

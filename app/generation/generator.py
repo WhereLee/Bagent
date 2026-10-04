@@ -81,9 +81,13 @@ def _memory_context(
     if personal:
         blocks.append("【关于用户的已知信息】\n" + "\n".join(f"- {m.content}" for m in personal))
     if knowledge:
-        blocks.append("【已沉淀的知识（按可信度）】\n" + "\n".join(
-            f"- {m.content}" + (f"（来源:{m.source_ref or m.source_type}）" if m.source_ref else "")
-            for m in knowledge))
+        playbook = [m for m in knowledge if getattr(m, "level", "fact") == "playbook"]
+        facts = [m for m in knowledge if getattr(m, "level", "fact") != "playbook"]
+        if playbook:
+            blocks.append("【可复用的经验原则】\n" + "\n".join(f"- {m.content}" for m in playbook))
+        if facts:
+            blocks.append("【已沉淀的具体事实】\n" + "\n".join(
+                f"- {m.content}" + (f"（来源:{m.source_ref}）" if m.source_ref else "") for m in facts))
     return "\n\n".join(blocks)
 
 

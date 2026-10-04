@@ -208,3 +208,7 @@ app/evaluation/trajectory.py：收敛率(status=final)/非法动作率/平均步
 - wiki 沉淀 app/research/publish.py：claims_to_facts(纯映射) + publish→ add_memory(scope=knowledge,trust=draft)。/research/{sid}/publish 端点。走 P0 同一 trust 门控：draft 不直接进作答，需佐证/人工促升——"沉淀"与"防污染"不矛盾。
 - agent 入 /query：query 加 agent=true → _query_agent 走 run_agent(工具=受控 kb_search/web_search)，返回 final+sources+轨迹指标。主 LLM 仍不隐式联网。
 测试 168 单测。n=100 污染确认跑后台进行中，终稿数出后刷新 §21/README。
+
+## 25. P3-A 经验分层（含自我证伪）
+落地 memories.level(fact|playbook)+tags(JSONB) 基础设施、search_memories 按 level/标签(@>)过滤、find_similar 同域、抽取与 publish 按内容启发式打 level、_memory_context 分块呈现。
+诚实评测(eval_experience_reuse.py，本地 bge、K=3、n=5)：跨场景可迁移 playbook 命中率 **扁平语义 1.00 vs 分层保底槽 0.60** —— 我的"给 playbook 保留召回槽"启发式**反而更差**（argmax 选错 playbook）。结论：不将该检索启发式并入产品；level/tags 只作**过滤/溯源/呈现**（真实有用、已过测试）。分层是否真提升可复用，需更对抗/真实的语料再判，此处不硬凑正向数。这是"评测证伪自己"的示范。

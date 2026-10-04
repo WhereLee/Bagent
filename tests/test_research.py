@@ -92,7 +92,16 @@ def test_claims_to_facts_maps_sources():
                       references=[Reference(id=1, source="http://x/1", url="http://x/1")],
                       claims=[Claim(text="用张仪行连横", reference_ids=[1])])
     facts = claims_to_facts(doc)
-    assert facts == [{"content": "秦惠文王：用张仪行连横", "source_ref": "http://x/1"}]
+    assert facts == [{"content": "秦惠文王：用张仪行连横", "source_ref": "http://x/1",
+                      "level": "fact", "tags": {"activity_type": "general"}}]
+
+
+def test_claims_to_facts_playbook_level():
+    from app.research.doc import Claim, Reference
+    from app.research.publish import claims_to_facts
+    doc = ResearchDoc(topic="活动", references=[Reference(id=1, source="u")],
+                      claims=[Claim(text="重大活动必做风险预案", reference_ids=[1])])
+    assert claims_to_facts(doc)[0]["level"] == "playbook"
 
 
 def test_publish_writes_draft_knowledge(monkeypatch):
@@ -116,3 +125,4 @@ def test_publish_writes_draft_knowledge(monkeypatch):
     n = pub.publish(doc, session=type("S", (), {"commit": lambda self: None})(),
                     embedder=Emb(), tenant="T")
     assert n == 1 and added["scope"] == "knowledge" and added["trust"] == "draft" and added["tenant_id"] == "T"
+    assert added["level"] == "fact" and "tags" in added
