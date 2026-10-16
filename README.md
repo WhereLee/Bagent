@@ -1,13 +1,27 @@
-# Bagent RAG
+# ReCall · 可评测的企业知识库 RAG / Agent 引擎
 
-一个**生产级、可独立部署**的检索增强生成（RAG）系统。目标不是"跑通一个 demo"，
-而是把 RAG 全链路的每一步（切块、向量化、混合检索、重排、生成、评估）都做成**可量化、
-可解释、可迭代**的工程，能够经受"你凭什么说效果更好"的追问。
+> 产品名 ReCall（召回 recall / 工具调用 call / 经验复盘回召）；仓库名仍为 `WhereLee/Bagent`，改名后同步本节标题与 remote。
 
-- LLM：Xiaomi MiMo（`mimo-v2.6-flash`，OpenAI 兼容端点，按量计费经济型）
-- Embedding：`bge-small-zh-v1.5`（本地 CPU 推理，权重落在 `models/`，不写 C 盘）
-- 向量库：PostgreSQL 18 + pgvector 0.8.2（HNSW / cosine）
-- 服务：FastAPI
+一个**可独立部署、每一步都能量化**的检索增强生成（RAG）/ Agent 服务。目标不是"跑通一个 demo"，而是把全链路每一步（切块、向量化、混合检索、重排、生成、引用、拒答、记忆写回、联网取证、评测）都做成**可量化、可解释、可迭代**的工程，能经受"你凭什么说效果更好"的追问。
+
+- LLM：DeepSeek 主 / Xiaomi MiMo 备（OpenAI 兼容端点），指数退避重试 + 主备降级 + 全挂时不裸 500
+- Embedding 与重排：`bge-small-zh-v1.5`（512 维）+ `bge-reranker-base`，本地 CPU 推理；重排后端可在 sentence-transformers 与导出的 ONNX int8 间切换
+- 向量库：PostgreSQL 18 + pgvector 0.8.2（HNSW / cosine）；共享状态（缓存 / 限流 / 研究会话）可切 Redis
+- 服务：FastAPI + Pydantic v2；同一套工具对外暴露为 **MCP server**，Claude / Cursor 可直接接入
+
+## 凭什么说它不是 demo（每条均可在仓内复现）
+
+| 维度 | 实测结果 | 复现入口 |
+|---|---|---|
+| 检索质量 | DuRetrieval（4000 段池 / 文档级 K=10）hybrid+rerank recall@10 **0.915**、MRR **0.968** | `scripts/eval_benchmark.py` |
+| 结论可信度 | 样本 80→**600** 并加 bootstrap 95%CI 后，dense 0.903±0.018 与 hybrid 0.888±0.018 **统计打平**，早期"混合更优"被自己当场否掉；稳定增益来自重排 | 同上（先用 `scripts/prepare_dataset.py --golden-only` 仅从本地缓存扩样本、不重嵌不入库） |
+| 生成证据链 | RGB（中文）负例拒答 0.750 → **0.833**，噪声下 faithfulness **0.921**；用 no-RAG 作负向对照时忠实度塌到 0、幻觉率 1.000，证明该指标真能抓到幻觉 | `scripts/eval_rgb.py`、`scripts/eval_generation.py` |
+| 记忆写回安全 | 三臂 A/B：库内无真相时 naive 污染率 **68.3%±11.7** → trust 门控 **0%**（转安全拒答）；并如实标出"两源合谋促升可绕过门控（73.3%）"为已知边界 | `scripts/eval_writeback_contamination.py` |
+| 落地成本 | 重排模型导出 ONNX int8：磁盘 **1.11GB→279MB**，MRR 与 fp32 持平（差值在 95%CI 内） | `scripts/export_reranker_onnx.py` |
+| 吞吐与瓶颈定位 | 重排候选 20→5：平均时延 **26.1s→4.2s**、吞吐 **0.29→1.58 req/s**；靠 `/metrics` 阶段计时把瓶颈定在 CPU 上的 rerank（比其余环节慢约 180×） | `locustfile.py` + `app/observability/` |
+| 多租户强制 | HMAC 签名租户令牌 fail-closed + 入库盖章 + **dense / BM25 / 缓存三路一致过滤**，跨租户读写与删除均有回归用例钉住 | `tests/test_tenant*.py` |
+| 对抗测试 | 注入对抗用例集用真实 payload 验防护拦得住（并因此补上了 `new instructions:` 漏网模式） | `tests/test_injection_adversarial.py` |
+| 测试与 CI | 170 个测试函数（含 13 个跑真 pgvector 服务容器的集成用例），单测全 hermetic（不联网、不依赖模型）；CI 四 job：单测 / 集成 / 密钥扫描 / 镜像构建 | `.github/workflows/ci.yml` |
 
 ## 这是什么（产品定位）
 
@@ -33,28 +47,40 @@
 └──────────────────────────────────────────────────────────┘
 ```
 
-## 目录结构
+## 目录结构（与当前代码同步）
 
 ```
 app/
-  config.py            # 统一配置 + HF 缓存重定向
-  db/       schema.sql models.py session.py
-  ingestion/ parser.py chunking.py embedder.py indexer.py
-  retrieval/ store.py                 # 向量检索（M2 加混合检索/rerank）
-  generation/ llm.py generator.py     # MiMo 客户端 + 查询编排
-  api/      main.py                   # FastAPI
-scripts/    download_models.py init_db.py rag_cli.py
-data/       corpus/ golden/           # 语料 / 评估集
-tests/  docs/  models/
+  config.py          # 统一配置（含 HF 缓存重定向、所有开关的默认值与理由）
+  db/                schema.sql · models.py · session.py
+  ingestion/         parser · chunking（父子块）· embedder · indexer
+  retrieval/         retriever · store（pgvector）· lexical（BM25+jieba）· fusion（RRF）
+                     · rerank（st / onnx 可插拔）· cache（LRU+TTL / Redis 可切）· selfrag
+  generation/        llm（多 provider 退避降级）· generator · prompts · citation
+                     · faithfulness · rewriter · conflict · budget（成本降级）
+  memory/            store · extract · lifecycle（双时态 + trust）· writeback（异步写回）
+  search/            base · factory · searxng · mimo · mock · web_clean · extract（SSRF 与注入清洗）
+  research/          agent（提纲→逐节取证）· evidence · doc · session · publish
+  agent/             react.py（有界工具循环 + HITL 门）
+  evaluation/        dataset · metrics · generation_metrics · stats（bootstrap CI）
+                     · contamination（污染 A/B 三臂）· trajectory（收敛率/非法动作率）
+  observability/     logging（JSON + request_id）· metrics（Prometheus）· middleware
+  tools.py · mcp_server.py · tenant.py · security.py · ratelimit.py
+  api/main.py        # FastAPI 入口（/query /chat /research /agent /memory /events ...）
+scripts/   eval_* · quantize_* · export_* · chunk_sweep · verify_* · rag_cli · init_db
+deploy/    searxng/ · prometheus/slo.rules.yml · start_app.sh · server_*.sh · *_smoke.sh
+tests/     hermetic 单测 + tests/integration（真 pgvector）
+data/      corpus/ · golden/ · benchmark/     docs/  design.md · SLO.md · 里程碑记录
 ```
 
-## 已知限制与运维约束（诚实列出，非黑盒）
+## 边界与取舍（知道在哪停下来，而不是假装没有边界）
 
-- **进程内状态四处**（BM25 内存索引、检索缓存、令牌桶、research 会话）：**必须单进程部署**（start_app.sh 未加 `--workers`）。加 `--workers N` 会造成这四个状态不一致（缓存/限流/租户视图分叉）。要横向扩展需先把这些外置（Redis/共享存储）。
-- **BM25 规模上限**：打分是 Python 层逐查询词遍历全量 tf，且任一写入即全库重建(含全量 jieba 分词)。万级子块就会开始吃秒级；过阈应切 pg_search/Elasticsearch 作词法腿（接口已抽象）。
-- **HNSW + WHERE 过滤召回退化**：vector_search 把 is_deleted/tenant 写在同一 WHERE；pgvector 默认 `ef_search=40`、`hnsw.iterative_scan=off`，过滤选择率低时会**真少返**（非仅排序）。上量后需在评测集实测，必要时 `SET hnsw.iterative_scan=relaxed_order`/调大 ef_search 或按租户部分索引/分区。集成测试库小看不出。
-- **无迁移工具**：schema 靠幂等 SQL + `ALTER ... IF NOT EXISTS`；**换 embedding 模型需改 `vector(512)` 并全量重建**（维度与模型绑定）。未引 Alembic 是有意的：项目规模下幂等 DDL 足够，上生产多环境时再引。
-- **/ingest 白名单**：仅允许读 `INGEST_ALLOWED_ROOT`(默认 data/)下的文件，防任意路径读取；CLI/脚本入库不受此限（信任本地）。
+- **单进程部署**：BM25 内存索引、检索缓存、令牌桶、研究会话四处进程内状态，`start_app.sh` 故意不加 `--workers`；M13 已把后三者做成可切 Redis（接口不变、默认内存），横向扩展时逐项外置即可。
+- **BM25 词法腿的规模上限**：打分是 Python 层逐查询词遍历 tf，且任一写入即全库重建。万级子块会开始吃秒级；接口已抽象为 `SearchProvider` / `lexical`，过阈值切 pg_search 或 Elasticsearch 不动其余链路。
+- **HNSW 带 WHERE 过滤的召回退化**：`is_deleted` / `tenant` 与向量条件写在同一 WHERE，pgvector 默认 `ef_search=40`、`iterative_scan=off`，过滤选择率低时会真少返。已列为上量后的第一个实测项（方案：`relaxed_order` / 调大 `ef_search` / 按租户部分索引）。
+- **未引 Alembic**：项目规模下幂等 DDL + `ALTER ... IF NOT EXISTS` 足够；**换 embedding 模型需改 `vector(512)` 并全量重建**（维度与模型绑定，这是向量库的固有约束，不是实现偷工）。
+- **默认全关**：self-RAG、联网、写回记忆、成本降级均需显式开关（配了不等于开了，也不静默花钱）；`/ingest` 只允许读 `INGEST_ALLOWED_ROOT` 下的文件。
+- **评测口径的诚实标注**：n=600 是在 4000 段池、文档级 K=10 下得出；更大语料维度（如 T2Ranking）与 rerank 在 600 样本上的重跑仍为延后项，已在正文标注而不是隐掉。
 
 ## 快速开始
 
@@ -79,40 +105,18 @@ tests/  docs/  models/
 #   POST /query   {"query": "...", "top_k": 5}
 ```
 
-## 设计对齐的"面试深挖点"
+## 演进脉络（M1–M13，全部已合入主干）
 
-本项目专门针对 RAG 面试的高频追问来落地功能（详见 `docs/design.md`）：
+按四个阶段推进，每阶段都带可复现的评测或压测证据（细节见 `docs/design.md` 与各里程碑文档）：
 
-| 追问 | 本项目做法 |
+| 阶段 | 内容 |
 |---|---|
-| 纯向量检索够不够 | 混合检索 BM25 + 稠密，RRF 融合 |
-| 为什么要 Rerank | Cross-Encoder 精排，粗召回 topN → 精排 topK |
-| Chunk 怎么切、多大 | 多策略 + 父子块 + overlap，**用消融实验定量比较** |
-| 怎么证明效果更好 | 评估体系：recall@k / MRR / NDCG + faithfulness，golden set + 回归 |
-| 怎么减幻觉 | 引用溯源（回链 chunk id）+ 无依据拒答 |
-| 多轮怎么办 | Query 改写 / 指代消解 |
+| M1–M5 链路与评估可信度 | 端到端 RAG 闭环（pgvector + bge）→ 混合检索与重排、父子块 → 引用校验/幻觉率/两级拒答 → 可观测与限流与 Docker/CI → 接入公认基准 C-MTEB/DuRetrieval 与 RGB，并修掉 BM25 不过滤软删的真 bug、完成 chunk 与 candidate 扫参 |
+| M6–M8 生产韧性与推理 | 多 provider 退避降级、检索缓存与自适应早退、prompt 注入防护 → self-RAG 充分性自检与改写重检、多源知识冲突检测与降级 |
+| M9–M11 联网、记忆与 Agent | 可插拔 SearchProvider（自架 SearXNG 主用）+ SSRF/注入清洗 → 写回记忆（双库分离、双时态、trust 生命周期、sleep-time 异步）→ 研究型 Agent（多源取证、逐节成文、会话态活文档）→ 有界 ReAct 循环与轨迹评测 + 共享工具注册表 + MCP server → 污染 A/B 三臂实验并修复 knowledge 记忆只写不读的缺口 |
+| M12–M13 产品锚定与上量 | 经验分层（level + tags）与跨租户数据面强制、结果回标促升/作废 → 成本预算自动降级、共享状态外部化 Redis、SLO 告警规则、评测样本上到 n=600 |
 
-## 里程碑
-
-- **M1 ✅**：端到端闭环 —— 解析→切块→向量→pgvector→MiMo 生成，含引用与拒答、FastAPI、CLI。
-- **M2 ✅**：检索质量 —— 混合检索(BM25+jieba / 稠密 / RRF) + Cross-Encoder rerank + 父子块(small-to-big)；golden set + recall@k/MRR/nDCG 消融。
-- **M3 ✅**：生成质量+证据链 —— faithfulness/幻觉率(LLM-as-judge)、引用校验与拒答收紧、多轮 query 改写、生成侧消融(含负向对照)。
-- **M4 ✅**：上线运维 —— 结构化 JSON 日志 + request_id、Prometheus 指标(/metrics)、令牌桶限流(429)、Locust 压测、Docker/compose 部署、CI 增强(secret-scan + docker-build)。
-- **M5 ✅**：评估可信度与工程补齐 —— ✅接入标准基准 C-MTEB/DuRetrieval(真 qrels、文档级)、✅修 #3 增量正确性 bug、✅#2 candidate 扫参、✅#1 chunk 尺寸扫参、✅生成侧接 RGB（拒答/噪声鲁棒）。
-- **M6 ✅**：生产化 —— 多 LLM provider(DeepSeek 主/MiMo 备)+超时/重试退避/降级、检索结果缓存+自适应早退、API-Key 鉴权、prompt 注入防护。
-- **M7 ✅**：测试与评估纵深 —— CI 新增 **integration job**（真 pgvector 服务容器跑端到端检索/增量回归）、注入对抗测试集、bootstrap 置信区间、RGB 反事实/信息整合子集。
-- **M8 ✅**：Self-RAG 与知识冲突 —— 证据充分性自检 + 不足时改写重检(带上限) + 多源矛盾检测与降级；为接入联网多源预留中枢。
-- **M9a ✅**：联网检索层 —— `SearchProvider` 抽象 + **SearXNG provider** + trafilatura 抽正文/时效 + **SSRF/注入清洗** + mock provider + 自架部署物料；默认关，结果以 draft 进多源佐证（实测引擎用 sogou/360，baidu 对机房 IP 弹验证码）。
-- **M9b ✅**：写回记忆 —— **个人/知识双库分离** + **双时态**(valid_at/invalid_at) + **trust 生命周期**(draft→verified→curated，多源佐证促升) + **sleep-time 异步写回**(不阻塞回答) + 检索按 trust 门控。默认关。
-- **M9c ✅**：研究型 Agent —— **多源取证**(KB⊕联网进 self-RAG) + **文档编排**(列提纲→逐节取证成文→行内引用/参考文献/论断表/冲突) + **会话态活文档** `/research` `/research/{id}` `/research/{id}/refine`。
-- **M10(⑥) ✅**：多租户**数据面强制** —— HMAC 签名租户令牌(fail-closed) + 入库盖章 + **检索三路一致过滤**(dense/BM25/缓存) + 记忆按租户隔离 + 跨租户读写越权拦截。
-- **M11(P0) ✅**：写回记忆**抗污染端到端 A/B**（三臂+合谋泄漏+四类判定+双场景）；修复 knowledge 记忆只写不读缺口。证据(n=60)：naive 68.3%→门控 0%→合谋泄漏 73.3%（已知边界）。
-- **M11(P1) ✅**：MiMo 受控联网检索源（主源空/错时**配置降级**，非主 LLM 自决）+ **共享工具注册表 `app/tools.py`** + **MCP server** + **显式有界 agent 循环与轨迹评测**（`/agent`，收敛率/非法动作率/平均步数）。
-- **M11(P2) ✅**：MiMo **端到端真验**（确认返回为平铺 `url_citation`、摘要字段实为 `summary`，修解析+回归测试）+ **wiki 沉淀** `/research/{sid}/publish`（论断→knowledge 记忆 draft，受同一 trust 门控）+ **agent 循环接入 `/query`**（`agent=true` 走工具循环产带依据答案）。
-- **M12 产品锚定 ✅**：把引擎向上定成**“组织经验复用 + 联网补全 + 对话打磨 + 复盘回写”闭环**（`docs/M12-*.md`）。**P3-A 经验分层**(fact/playbook+tags；含可复用评测——诚实证伪：扁平时优，不塞更差启发式) + **P3-B 复盘整体归档**(Event 实体 + `event_playbook`)。
-
-- **M12 P3-C ✅**：**结果回标**（`/memory/feedback`：use_success/use_fail 驱动 outcome_action 促升/作废），用“用过成没成”补强“多源一致≠真相”。
-- **M13 生产化+上量 ✅**：**成本预算与自动降级**(`request_token_budget`超预算缩top_k/跳rerank/关忠实度, `Answer.degraded`+`COST_DEGRADED`) + **共享状态外部化 Redis**(检索缓存/限流固定窗口/研究会话均可切，接口不变，默认内存) + **SLO/告警**(`deploy/prometheus/slo.rules.yml`+`docs/SLO.md`) + **评测上量 n=600**。
+> 里程碑阶段号保留在代码注释与 `docs/` 里（含每步的实测记录与否决项），便于回溯"为什么这么定"；对外阅读只需要上面这张表。
 
 ## 检索质量验证（消融，本地复现：`scripts/eval_retrieval.py`）
 
@@ -163,8 +167,12 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 - **部署**：`docker compose up -d --build`（起 pgvector 库 + app；模型权重挂载 `./models`，不入镜像）。
 
 ### HTTP 端点
-`GET /health`、`GET /metrics`、`POST /ingest`、`POST /delete`、`POST /search`、`POST /query`、`POST /chat`（文档 `/docs`）。
-若设了 `API_KEY`，除 `/health`/`/metrics`/`/docs` 外均需请求头 `X-API-Key`（恒定时间比较）。
+
+- 基础：`GET /health`、`GET /metrics`、`POST /ingest`、`POST /delete`、`POST /search`、`POST /query`、`POST /chat`（文档 `/docs`）
+- 记忆：`GET /memory`、`POST /memory/promote`、`POST /memory/invalidate`、`POST /memory/feedback`（结果回标驱动促升/作废）
+- 研究与 Agent：`POST /research`、`GET /research/{sid}`、`POST /research/{sid}/refine`、`POST /research/{sid}/publish`（论断→knowledge 记忆，受同一 trust 门控）、`POST /agent`
+- 经验复用：`POST /events`、`GET /events/{event_id}/playbook`（复盘整体归档与取回）
+- 鉴权：设了 `API_KEY` 后，除 `/health`/`/metrics`/`/docs` 外均需请求头 `X-API-Key`（恒定时间比较）；多租户模式下还需 `X-Tenant` 签名令牌，缺/错直接 403 fail-closed
 
 ## 测试与评估纵深（M7）
 
