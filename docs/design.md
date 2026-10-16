@@ -48,7 +48,7 @@ M2/M3 会用 **golden set 上的 recall@k 消融实验**比较不同 chunk_size/
 
 ## 8. M2：混合检索与重排
 
-**词法腿（关键决策）**：面试默认的 BM25，在 Windows + PostgreSQL 18 上无法便捷安装 pg_search(Rust) 扩展。
+**词法腿（关键决策）**：常见的 BM25，在 Windows + PostgreSQL 18 上无法便捷安装 pg_search(Rust) 扩展。
 选型对比：pg_search(真 BM25、DB 原生、可移植性差) / pg_trgm(非 BM25、中文噪声) /
 **Python BM25 + jieba（采用）**。取舍在于：算法是真 BM25(k1/b/IDF)，但索引载体是进程内存；
 一致性用 generation 标记 (count, max_id) 触发重建。**规模化迁移路径：语料变大后切 pg_search/ES，
