@@ -41,6 +41,13 @@ class MemorySearchArgs(BaseModel):
     k: int = Field(default=3, ge=1)
 
 
+class PublishResearchArgs(BaseModel):
+    session_id: str = Field(min_length=1)
+    event_id: int | None = Field(default=None, ge=1)
+    event_name: str | None = None
+    event_type: str | None = None
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """工具的 LLM 契约：描述、参数模型、是否副作用、是否需要人工审批。"""
@@ -103,11 +110,12 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
 
 def _research_impl(topic: str, use_kb: bool, use_web: bool, max_sections: int) -> dict:
     from app.generation.llm import get_llm
-    from app.research import agent
+    from app.research import agent, session as research_session
 
     doc = agent.research(topic, llm=get_llm(), use_kb=use_kb, use_web=use_web,
                          max_sections=max_sections)
-    return {"markdown": doc.to_markdown(), "doc": doc.to_dict()}
+    sid = research_session.create(doc)
+    return {"session_id": sid, "markdown": doc.to_markdown(), "doc": doc.to_dict()}
 
 
 def research(topic: str, use_kb: bool = True, use_web: bool = False, max_sections: int = 4) -> dict:
@@ -136,6 +144,39 @@ def memory_search(query: str, user_id: str | None = None, k: int = 3) -> list[di
     return _memory_search_impl(query, k, user_id=user_id)
 
 
+def _publish_research_impl(session_id: str, event_id: int | None = None,
+                           event_name: str | None = None,
+                           event_type: str | None = None) -> dict:
+    from app.db.session import get_session
+    from app.ingestion.embedder import get_embedder
+    from app.memory.store import create_event
+    from app.research.publish import publish
+    from app.research.session import get as get_research
+
+    doc = get_research(session_id)
+    if doc is None:
+        raise ValueError("research session not found")
+    session = get_session()
+    try:
+        eid = event_id
+        if not eid and event_name:
+            ev = create_event(session, name=event_name, type=event_type)
+            eid = ev.id
+        added = publish(doc, session=session, embedder=get_embedder(), event_id=eid)
+        session.commit()
+        return {"session_id": session_id, "published": added, "event_id": eid,
+                "trust": "draft"}
+    finally:
+        session.close()
+
+
+def publish_research(session_id: str, event_id: int | None = None,
+                     event_name: str | None = None,
+                     event_type: str | None = None) -> dict:
+    """把一份 research session 的论断发布为 knowledge 记忆（draft）。"""
+    return _publish_research_impl(session_id, event_id, event_name, event_type)
+
+
 # name -> callable；供 MCP/agent 统一登记与调用
 TOOLS = {
     "kb_search": kb_search,
@@ -143,6 +184,7 @@ TOOLS = {
     "web_search": web_search,
     "research": research,
     "memory_search": memory_search,
+    "publish_research": publish_research,
 }
 
 
@@ -175,6 +217,12 @@ TOOL_SPECS: dict[str, ToolSpec] = {
         name="memory_search", func=memory_search,
         description="检索已验证的记忆（个人偏好/共享知识）。",
         args_model=MemorySearchArgs, required_scope="agent:memory",
+    ),
+    "publish_research": ToolSpec(
+        name="publish_research", func=publish_research,
+        description="把研究文档发布为 knowledge 记忆（draft，需人工确认）。",
+        args_model=PublishResearchArgs, required_scope="agent:research",
+        side_effect=True, requires_approval=True, idempotent=True,
     ),
 }
 
@@ -222,12 +270,19 @@ def build_tools(*, user_id: str | None = None, compact: bool = False,
         """检索已验证的记忆（个人偏好/共享知识）。"""
         return _memory_search_impl(query, k, user_id=user_id)
 
+    def _publish_research(session_id: str, event_id: int | None = None,
+                          event_name: str | None = None,
+                          event_type: str | None = None) -> dict:
+        """把研究文档发布为 knowledge 记忆（draft）。"""
+        return _publish_research_impl(session_id, event_id, event_name, event_type)
+
     result = {
         "kb_search": _kb_search,
         "kb_answer": _kb_answer,
         "web_search": _web_search,
         "research": _research,
         "memory_search": _memory_search,
+        "publish_research": _publish_research,
     }
     if scopes is None:
         return result

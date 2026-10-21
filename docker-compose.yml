@@ -40,5 +40,24 @@ services:
     ports:
       - "8000:8000"
 
+  agent-worker:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      PG_HOST: db
+      PG_PORT: "5432"
+      PG_DATABASE: bagent_rag
+      HF_HOME: /app/models
+      HF_HUB_OFFLINE: "1"
+    command: ["python", "scripts/agent_worker.py"]
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+    restart: unless-stopped
+
 volumes:
   pgdata:

@@ -20,7 +20,7 @@ from app.security import constant_time_equal
 
 log = get_logger("http")
 
-EXEMPT_PATHS = {"/health", "/ready", "/metrics", "/docs", "/openapi.json", "/redoc"}
+EXEMPT_PATHS = {"/health", "/ready", "/metrics", "/docs", "/openapi.json", "/redoc", "/workbench"}
 
 
 def client_ip(request: Request, trust_proxy: bool = False) -> str:

@@ -6,7 +6,8 @@ from app.retrieval.store import RetrievedChunk
 
 
 def test_tools_registry_shape():
-    assert set(tools.TOOLS) == {"kb_search", "kb_answer", "web_search", "research", "memory_search"}
+    assert set(tools.TOOLS) == {"kb_search", "kb_answer", "web_search", "research",
+                               "memory_search", "publish_research"}
     assert all(callable(f) for f in tools.TOOLS.values())
 
 
@@ -62,7 +63,7 @@ def test_build_tools_filters_by_scope():
     read_tools = tools.build_tools(scopes={"agent:read"})
     assert set(read_tools) == {"kb_search", "kb_answer", "web_search"}
     research_tools = tools.build_tools(scopes={"agent:research"})
-    assert set(research_tools) == {"research"}
+    assert set(research_tools) == {"research", "publish_research"}
     assert set(tools.build_tools(scopes={"*"})) == set(tools.TOOLS)
 
 

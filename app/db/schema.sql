@@ -88,12 +88,22 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     answer          JSONB,                           -- 最终答案质量字段（sources/grounded/...）
     error           TEXT,
     approval_token  TEXT NOT NULL,                   -- run 级审批令牌，不写日志
+    scopes          JSONB,                           -- 恢复执行时使用的工具 scope
+    lease_owner     TEXT,                            -- 执行租约持有者
+    lease_until     TIMESTAMPTZ,                     -- 租约到期时间
+    attempt         INT NOT NULL DEFAULT 0,           -- 抢租约/恢复次数
     token_input     INT NOT NULL DEFAULT 0,
     token_output    INT NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runs_status_updated ON agent_runs(status, updated_at);
+-- P2：已有库幂等补列
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS scopes JSONB;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS lease_owner TEXT;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS attempt INT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_agent_runs_recoverable ON agent_runs(status, lease_until);
 
 -- P0 Agent 运行时：逐步骤轨迹（工具/参数/观察/延迟/token）
 CREATE TABLE IF NOT EXISTS agent_steps (

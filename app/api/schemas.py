@@ -105,6 +105,11 @@ class CancelReq(BaseModel):
     approval_token: str
 
 
+class MCPCallReq(BaseModel):
+    tool: str = Field(min_length=1)
+    arguments: dict = Field(default_factory=dict)
+
+
 class EventReq(BaseModel):
     name: str
     type: str | None = None

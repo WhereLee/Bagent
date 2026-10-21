@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.routes import agent, events, health, ingest, memory, ops, query, research, search
+from app.api.routes import agent, events, health, ingest, mcp_gateway, memory, ops, query, research, search, workbench
 from app.config import get_settings
 from app.db.session import get_engine, init_schema
 from app.observability.logging import configure_logging
@@ -41,7 +41,8 @@ def create_app() -> FastAPI:
         trust_proxy=s.trust_proxy_headers,
     )
 
-    for module in (health, ops, ingest, search, query, memory, research, events, agent):
+    for module in (health, ops, ingest, search, query, memory, research, events, agent,
+                   mcp_gateway, workbench):
         application.include_router(module.router)
     return application
 

@@ -109,6 +109,9 @@ AGENT_APPROVALS = Counter(
 AGENT_TOOL_RETRIES = Counter(
     "bagent_agent_tool_retries_total", "Agent 工具重试次数", ["tool"]
 )
+MCP_GATEWAY_CALLS = Counter(
+    "bagent_mcp_gateway_calls_total", "MCP gateway 工具调用", ["server", "tool", "status"]
+)
 
 
 def render_metrics() -> tuple[bytes, str]:

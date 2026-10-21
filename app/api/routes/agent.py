@@ -123,7 +123,10 @@ def agent_run_stream(req: AgentRunReq, principal: Principal | None = Depends(get
     """创建并流式运行；断开连接不取消 run，之后可用 events 端点重放。"""
     store = get_run_store()
     user_id = _effective_user(req.user_id, principal)
-    run = store.create(new_run(req.goal, max_steps=req.max_steps, user_id=user_id))
+    run = store.create(new_run(
+        req.goal, max_steps=req.max_steps, user_id=user_id,
+        scopes=list(principal.scopes) if principal is not None else None,
+    ))
     queue: Queue = Queue()
 
     def sink(event: dict) -> None:

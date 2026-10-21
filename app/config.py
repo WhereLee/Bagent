@@ -127,6 +127,14 @@ class Settings(BaseSettings):
     otel_service_name: str = "bagent-agent"
     otel_exporter_otlp_endpoint: str = ""
 
+    # --- P2 Durable Agent execution ---
+    agent_lease_ttl_s: float = 60.0
+    agent_worker_poll_s: float = 5.0
+    agent_recovery_limit: int = 10
+    agent_context_max_chars: int = 12000
+    agent_keep_recent_steps: int = 4
+    agent_compact_observation_chars: int = 240
+
     # --- P1 Auth (optional; default off keeps local compatibility) ---
     auth_enabled: bool = False
     jwt_secret: str = ""

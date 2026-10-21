@@ -9,11 +9,11 @@ from __future__ import annotations
 import secrets
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 
 from app.db.models import AgentRun as AgentRunRow
 from app.db.models import AgentStep as AgentStepRow
@@ -43,11 +43,13 @@ def is_terminal(status: str) -> bool:
     return status in TERMINAL_STATUSES
 
 
-def new_run(goal: str, *, max_steps: int = 6, user_id: str | None = None) -> "AgentRun":
+def new_run(goal: str, *, max_steps: int = 6, user_id: str | None = None,
+            scopes: list[str] | None = None) -> "AgentRun":
     return AgentRun(
         id=uuid.uuid4().hex,
         goal=goal,
         user_id=user_id,
+        scopes=list(scopes) if scopes is not None else None,
         max_steps=max_steps,
         approval_token=secrets.token_hex(16),
         created_at=datetime.now(timezone.utc),
@@ -62,8 +64,12 @@ class AgentRun:
     status: str = RunStatus.RUNNING.value
     approval_token: str = ""
     user_id: str | None = None
+    scopes: list[str] | None = None
     max_steps: int = 6
     step_count: int = 0
+    lease_owner: str | None = None
+    lease_until: datetime | None = None
+    attempt: int = 0
     pending_action: dict | None = None
     final: str | None = None
     answer: dict | None = None
@@ -96,6 +102,10 @@ class RunStore(Protocol):
     def update(self, run: AgentRun) -> None: ...
     def add_step(self, step: AgentStep) -> None: ...
     def list_steps(self, run_id: str) -> list[AgentStep]: ...
+    def acquire_lease(self, run_id: str, owner: str, ttl_s: float) -> bool: ...
+    def renew_lease(self, run_id: str, owner: str, ttl_s: float) -> bool: ...
+    def release_lease(self, run_id: str, owner: str) -> None: ...
+    def list_recoverable(self, *, limit: int = 10) -> list[AgentRun]: ...
 
 
 class InMemoryRunStore:
@@ -129,6 +139,41 @@ class InMemoryRunStore:
     def list_steps(self, run_id: str) -> list[AgentStep]:
         return sorted(self._steps.get(run_id, []), key=lambda s: s.step_index)
 
+    def acquire_lease(self, run_id: str, owner: str, ttl_s: float) -> bool:
+        run = self._runs.get(run_id)
+        now = datetime.now(timezone.utc)
+        if run is None or run.status not in (RunStatus.RUNNING.value,
+                                             RunStatus.AWAITING_APPROVAL.value):
+            return False
+        if run.lease_until is not None and run.lease_until > now and run.lease_owner != owner:
+            return False
+        run.lease_owner = owner
+        run.lease_until = now + timedelta(seconds=ttl_s)
+        run.attempt += 1
+        run.updated_at = now
+        return True
+
+    def renew_lease(self, run_id: str, owner: str, ttl_s: float) -> bool:
+        run = self._runs.get(run_id)
+        if run is None or run.status != RunStatus.RUNNING.value or run.lease_owner != owner:
+            return False
+        run.lease_until = datetime.now(timezone.utc) + timedelta(seconds=ttl_s)
+        return True
+
+    def release_lease(self, run_id: str, owner: str) -> None:
+        run = self._runs.get(run_id)
+        if run is not None and run.lease_owner == owner:
+            run.lease_owner = None
+            run.lease_until = None
+
+    def list_recoverable(self, *, limit: int = 10) -> list[AgentRun]:
+        now = datetime.now(timezone.utc)
+        rows = [r for r in self._runs.values()
+                if r.status == RunStatus.RUNNING.value
+                and (r.lease_until is None or r.lease_until <= now)]
+        rows.sort(key=lambda r: r.updated_at or r.created_at or now)
+        return rows[:limit]
+
     def clear(self) -> None:
         self._runs.clear()
         self._steps.clear()
@@ -141,9 +186,11 @@ class PostgresRunStore:
     def _to_run(row: AgentRunRow) -> AgentRun:
         return AgentRun(
             id=row.id, goal=row.goal, status=row.status, approval_token=row.approval_token,
-            user_id=row.user_id, max_steps=row.max_steps, step_count=row.step_count,
-            pending_action=row.pending_action, final=row.final, answer=row.answer,
-            error=row.error, token_input=row.token_input, token_output=row.token_output,
+            user_id=row.user_id, scopes=row.scopes, max_steps=row.max_steps,
+            step_count=row.step_count, pending_action=row.pending_action,
+            final=row.final, answer=row.answer, error=row.error,
+            lease_owner=row.lease_owner, lease_until=row.lease_until, attempt=row.attempt or 0,
+            token_input=row.token_input, token_output=row.token_output,
             created_at=row.created_at, updated_at=row.updated_at,
         )
 
@@ -160,10 +207,11 @@ class PostgresRunStore:
         session = get_session()
         try:
             row = AgentRunRow(
-                id=run.id, goal=run.goal, user_id=run.user_id, status=run.status,
-                max_steps=run.max_steps, step_count=run.step_count,
+                id=run.id, goal=run.goal, user_id=run.user_id, scopes=run.scopes,
+                status=run.status, max_steps=run.max_steps, step_count=run.step_count,
                 pending_action=run.pending_action, final=run.final, answer=run.answer,
                 error=run.error, approval_token=run.approval_token,
+                lease_owner=run.lease_owner, lease_until=run.lease_until, attempt=run.attempt,
                 token_input=run.token_input, token_output=run.token_output,
             )
             session.add(row)
@@ -187,8 +235,9 @@ class PostgresRunStore:
             row = session.get(AgentRunRow, run.id)
             if row is None:
                 raise KeyError(f"run not found: {run.id}")
-            for name in ("goal", "user_id", "status", "max_steps", "step_count",
+            for name in ("goal", "user_id", "scopes", "status", "max_steps", "step_count",
                          "pending_action", "final", "answer", "error", "approval_token",
+                         "lease_owner", "lease_until", "attempt",
                          "token_input", "token_output"):
                 setattr(row, name, getattr(run, name))
             row.updated_at = datetime.now(timezone.utc)
@@ -224,6 +273,68 @@ class PostgresRunStore:
         finally:
             session.close()
 
+    def acquire_lease(self, run_id: str, owner: str, ttl_s: float) -> bool:
+        session = get_session()
+        now = datetime.now(timezone.utc)
+        until = now + timedelta(seconds=ttl_s)
+        try:
+            result = session.execute(
+                update(AgentRunRow).where(
+                    AgentRunRow.id == run_id,
+                    AgentRunRow.status.in_([RunStatus.RUNNING.value,
+                                            RunStatus.AWAITING_APPROVAL.value]),
+                    or_(AgentRunRow.lease_until.is_(None), AgentRunRow.lease_until < now,
+                        AgentRunRow.lease_owner == owner),
+                ).values(lease_owner=owner, lease_until=until,
+                         attempt=AgentRunRow.attempt + 1, updated_at=now)
+            )
+            session.commit()
+            return result.rowcount == 1
+        finally:
+            session.close()
+
+    def renew_lease(self, run_id: str, owner: str, ttl_s: float) -> bool:
+        session = get_session()
+        now = datetime.now(timezone.utc)
+        try:
+            result = session.execute(
+                update(AgentRunRow).where(
+                    AgentRunRow.id == run_id,
+                    AgentRunRow.status == RunStatus.RUNNING.value,
+                    AgentRunRow.lease_owner == owner,
+                ).values(lease_until=now + timedelta(seconds=ttl_s), updated_at=now)
+            )
+            session.commit()
+            return result.rowcount == 1
+        finally:
+            session.close()
+
+    def release_lease(self, run_id: str, owner: str) -> None:
+        session = get_session()
+        try:
+            session.execute(
+                update(AgentRunRow).where(AgentRunRow.id == run_id,
+                                          AgentRunRow.lease_owner == owner)
+                .values(lease_owner=None, lease_until=None)
+            )
+            session.commit()
+        finally:
+            session.close()
+
+    def list_recoverable(self, *, limit: int = 10) -> list[AgentRun]:
+        session = get_session()
+        now = datetime.now(timezone.utc)
+        try:
+            rows = session.scalars(
+                select(AgentRunRow).where(
+                    AgentRunRow.status == RunStatus.RUNNING.value,
+                    or_(AgentRunRow.lease_until.is_(None), AgentRunRow.lease_until < now),
+                ).order_by(AgentRunRow.updated_at).limit(limit)
+            ).all()
+            return [self._to_run(r) for r in rows]
+        finally:
+            session.close()
+
 
 def run_to_dict(run: AgentRun, *, include_token: bool = False) -> dict:
     payload = {
@@ -233,6 +344,8 @@ def run_to_dict(run: AgentRun, *, include_token: bool = False) -> dict:
         "status": run.status,
         "max_steps": run.max_steps,
         "step_count": run.step_count,
+        "attempt": run.attempt,
+        "lease_until": run.lease_until.isoformat() if run.lease_until else None,
         "pending_action": run.pending_action,
         "final": run.final,
         "answer": run.answer,

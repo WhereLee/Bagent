@@ -7,14 +7,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
+import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
+from app.agent.context import compact_history
 from app.agent.events import EventSink, emit_event, status_event_type, use_event_sink
 from app.agent.finalize import finalize_agent_answer
 from app.agent.state import (
@@ -52,6 +57,16 @@ from app.tools import (
 _log = get_logger("agent")
 _JSON = re.compile(r"\{.*\}", re.S)
 _TOOL_EXECUTOR = ThreadPoolExecutor(thread_name_prefix="bagent-tool")
+
+
+def _lease_owner(prefix: str = "api") -> str:
+    return f"{prefix}:{os.getpid()}:{threading.get_ident()}:{uuid.uuid4().hex[:8]}"
+
+
+def _set_local_lease(run: AgentRun, owner: str, ttl: float) -> None:
+    run.lease_owner = owner
+    run.lease_until = datetime.now(timezone.utc) + timedelta(seconds=ttl)
+    run.attempt += 1
 
 
 class ToolExecutionError(Exception):
@@ -120,24 +135,40 @@ def start_run(
     run: AgentRun | None = None,
     event_sink: EventSink | None = None,
     scopes: set[str] | frozenset[str] | None = None,
+    lease_owner: str | None = None,
+    lease_ttl_s: float | None = None,
 ) -> AgentRun:
     store = store if store is not None else InMemoryRunStore()
     if run is None:
-        run = store.create(new_run(goal, max_steps=max_steps, user_id=user_id))
-    with use_event_sink(event_sink):
-        _emit_run_started(run)
-        with trace_span("invoke_agent", attributes={
-            "gen_ai.operation.name": "invoke_agent",
-            "gen_ai.agent.name": "bagent-agent",
-            "bagent.run_id": run.id,
-        }) as span:
-            run = _drive(
-                run, store=store, llm=llm, tools=tools, requires_confirm=requires_confirm,
-                confirm=confirm, tool_specs=tool_specs, finalize=finalize,
-                check_faithfulness=check_faithfulness, scopes=scopes,
-            )
-            span.set_attribute("bagent.status", run.status)
-            return run
+        run = store.create(new_run(goal, max_steps=max_steps, user_id=user_id,
+                                   scopes=list(scopes) if scopes is not None else None))
+    elif run.scopes is None and scopes is not None:
+        run.scopes = list(scopes)
+    owner = lease_owner or _lease_owner("api")
+    ttl = lease_ttl_s if lease_ttl_s is not None else get_settings().agent_lease_ttl_s
+    if not store.acquire_lease(run.id, owner, ttl):
+        raise RuntimeError(f"run lease unavailable: {run.id}")
+    _set_local_lease(run, owner, ttl)
+    try:
+        with use_event_sink(event_sink):
+            _emit_run_started(run)
+            with trace_span("invoke_agent", attributes={
+                "gen_ai.operation.name": "invoke_agent",
+                "gen_ai.agent.name": "bagent-agent",
+                "bagent.run_id": run.id,
+            }) as span:
+                run = _drive(
+                    run, store=store, llm=llm, tools=tools, requires_confirm=requires_confirm,
+                    confirm=confirm, tool_specs=tool_specs, finalize=finalize,
+                    check_faithfulness=check_faithfulness, scopes=scopes,
+                    lease_owner=owner, lease_ttl_s=ttl,
+                )
+                span.set_attribute("bagent.status", run.status)
+                return run
+    finally:
+        store.release_lease(run.id, owner)
+        run.lease_owner = None
+        run.lease_until = None
 
 
 def resume_run(
@@ -151,6 +182,8 @@ def resume_run(
     finalize: bool = True,
     check_faithfulness: bool = False,
     scopes: set[str] | frozenset[str] | None = None,
+    lease_owner: str | None = None,
+    lease_ttl_s: float | None = None,
 ) -> AgentRun:
     """恢复 awaiting_approval 的 run：approve/reject/cancel。"""
     run = store.get(run_id)
@@ -172,6 +205,11 @@ def resume_run(
         raise ValueError(f"unknown decision: {decision}")
     if run.status != RunStatus.AWAITING_APPROVAL.value:
         raise ValueError(f"run is not awaiting approval: {run.status}")
+    owner = lease_owner or _lease_owner("resume")
+    ttl = lease_ttl_s if lease_ttl_s is not None else get_settings().agent_lease_ttl_s
+    if not store.acquire_lease(run.id, owner, ttl):
+        raise RuntimeError(f"run lease unavailable: {run.id}")
+    _set_local_lease(run, owner, ttl)
     pending = run.pending_action or {}
     pending_step = pending.get("step_index")
     if step_index is not None and int(step_index) != int(pending_step):
@@ -190,13 +228,16 @@ def resume_run(
     tool = str(pending.get("tool") or "")
     args = pending.get("args") or {}
     thought = pending.get("thought")
-    run.pending_action = None
     run.status = RunStatus.RUNNING.value
     store.update(run)
     if tool not in (tools or TOOLS):
         _append_step(store, run, AgentStep(
             run_id=run.id, step_index=run.step_count, thought=thought,
-            action=f"unknown:{tool}", args=args, observation="未知工具",
+            action=f"unknown:{tool}", args=args,
+            observation=json.dumps({
+                "error_type": "unknown", "message": "未知工具",
+                "retryable": False, "hint": "使用可用工具或直接回答",
+            }, ensure_ascii=False)[:1500],
         ))
     else:
         _execute_tool(
@@ -205,6 +246,8 @@ def resume_run(
             specs=tool_specs if tool_specs is not None else TOOL_SPECS,
             scopes=scopes,
         )
+    run.pending_action = None
+    store.update(run)
     with trace_span("invoke_agent", attributes={
         "gen_ai.operation.name": "invoke_agent",
         "gen_ai.agent.name": "bagent-agent",
@@ -214,9 +257,79 @@ def resume_run(
             run, store=store, llm=llm, tools=tools, requires_confirm=requires_confirm,
             confirm=confirm, tool_specs=tool_specs, finalize=finalize,
             check_faithfulness=check_faithfulness, scopes=scopes,
+            lease_owner=owner, lease_ttl_s=ttl,
         )
         span.set_attribute("bagent.status", run.status)
+        store.release_lease(run.id, owner)
+        run.lease_owner = None
+        run.lease_until = None
         return run
+
+
+def continue_run(
+    run_id: str, *, llm, store: RunStore, tools: dict | None = None,
+    tool_specs: dict[str, ToolSpec] | None = None,
+    requires_confirm: set[str] | None = None,
+    confirm: Callable[[str, dict], bool] | None = None,
+    finalize: bool = True,
+    check_faithfulness: bool = False,
+    scopes: set[str] | frozenset[str] | None = None,
+    lease_owner: str | None = None,
+    lease_ttl_s: float | None = None,
+) -> AgentRun:
+    """恢复一个仍为 running 的 run；供崩溃恢复 worker 使用。"""
+    run = store.get(run_id)
+    if run is None or run.status != RunStatus.RUNNING.value:
+        return run
+    owner = lease_owner or _lease_owner("worker")
+    ttl = lease_ttl_s if lease_ttl_s is not None else get_settings().agent_lease_ttl_s
+    if not store.acquire_lease(run.id, owner, ttl):
+        return run
+    _set_local_lease(run, owner, ttl)
+    active_scopes = scopes if scopes is not None else run.scopes
+    try:
+        if run.pending_action:
+            pending = run.pending_action
+            tool = str(pending.get("tool") or "")
+            args = pending.get("args") or {}
+            thought = pending.get("thought")
+            if tool not in (tools or TOOLS):
+                _append_step(store, run, AgentStep(
+                    run_id=run.id, step_index=run.step_count, thought=thought,
+                    action=f"unknown:{tool}", args=args,
+                    observation=json.dumps({
+                        "error_type": "unknown", "message": "未知工具",
+                        "retryable": False, "hint": "使用可用工具或直接回答",
+                    }, ensure_ascii=False)[:1500],
+                ))
+            else:
+                _execute_tool(
+                    run, store, tools=tools or TOOLS, tool=tool, args=args,
+                    thought=thought, step_index=run.step_count,
+                    specs=tool_specs if tool_specs is not None else TOOL_SPECS,
+                    scopes=active_scopes,
+                )
+            run.pending_action = None
+            store.update(run)
+        with trace_span("invoke_agent", attributes={
+            "gen_ai.operation.name": "invoke_agent",
+            "gen_ai.agent.name": "bagent-agent",
+            "bagent.run_id": run.id, "bagent.recover": True,
+        }) as span:
+            run = _drive(
+                run, store=store, llm=llm, tools=tools,
+                requires_confirm=requires_confirm, confirm=confirm,
+                tool_specs=tool_specs, finalize=finalize,
+                check_faithfulness=check_faithfulness,
+                scopes=active_scopes,
+                lease_owner=owner, lease_ttl_s=ttl,
+            )
+            span.set_attribute("bagent.status", run.status)
+            return run
+    finally:
+        store.release_lease(run.id, owner)
+        run.lease_owner = None
+        run.lease_until = None
 
 
 def _drive(
@@ -226,6 +339,8 @@ def _drive(
     tool_specs: dict[str, ToolSpec] | None,
     finalize: bool, check_faithfulness: bool,
     scopes: set[str] | frozenset[str] | None = None,
+    lease_owner: str | None = None,
+    lease_ttl_s: float | None = None,
 ) -> AgentRun:
     tools = tools if tools is not None else TOOLS
     specs = tool_specs if tool_specs is not None else TOOL_SPECS
@@ -239,9 +354,19 @@ def _drive(
         run = latest
         if run.status != RunStatus.RUNNING.value:
             return run
+        if lease_owner is not None:
+            ttl = lease_ttl_s if lease_ttl_s is not None else get_settings().agent_lease_ttl_s
+            if not store.renew_lease(run.id, lease_owner, ttl):
+                return run
 
         steps = store.list_steps(run.id)
-        history = _history(run.goal, steps)
+        settings = get_settings()
+        history = compact_history(
+            run.goal, steps,
+            max_chars=settings.agent_context_max_chars,
+            keep_recent=settings.agent_keep_recent_steps,
+            obs_limit=settings.agent_compact_observation_chars,
+        )
         step_index = run.step_count
         emit_event({
             "event_id": 2 * step_index + 1, "event": "step_started",
