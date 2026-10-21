@@ -122,6 +122,18 @@ class Settings(BaseSettings):
     degrade_skip_rerank: bool = True  # 降级时跳过 rerank(省 CPU)
     degrade_skip_faithfulness: bool = True  # 降级时省一次忠实度 LLM 调用
 
+    # --- P1 Tracing (optional) ---
+    otel_enabled: bool = False
+    otel_service_name: str = "bagent-agent"
+    otel_exporter_otlp_endpoint: str = ""
+
+    # --- P1 Auth (optional; default off keeps local compatibility) ---
+    auth_enabled: bool = False
+    jwt_secret: str = ""
+    jwt_alg: str = "HS256"
+    jwt_issuer: str = ""
+    jwt_audience: str = ""
+
     # --- Security (M6) ---
     api_key: str = ""                 # 非空则启用 /query /search 等鉴权
     prompt_injection_guard: bool = True

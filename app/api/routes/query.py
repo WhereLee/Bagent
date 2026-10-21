@@ -41,20 +41,24 @@ def _query_agent(query: str, *, top_k: int | None, user_id: str | None = None) -
     # compact=True：observation 只带短 snippet，避免超出 run_agent 的 1500 字截断
     all_tools = build_tools(user_id=user_id, compact=True)
     tools = {name: all_tools[name] for name in ("kb_search", "web_search")}
-    traj = run_agent(f"请检索并回答（末尾给出依据来源）：{query}", llm=get_llm(), tools=tools, max_steps=4)
-    sources = sorted({s.get("source") or s.get("url") for st in traj["steps"]
-                      for s in _parse_obs(st.get("observation")) if (s.get("source") or s.get("url"))})
-    return {"query": query, "text": traj.get("final") or "（未收敛）",
-            "sources": sources, "mode": "agent", "status": traj["status"],
-            "metrics": summarize_trajectories([traj])}
-
-
-def _parse_obs(obs):
-    try:
-        v = json.loads(obs or "[]")
-        return v if isinstance(v, list) else []
-    except (ValueError, TypeError):
-        return []
+    traj = run_agent(
+        f"请检索并回答（末尾给出依据来源）：{query}", llm=get_llm(), tools=tools,
+        max_steps=4, finalize=True,
+        check_faithfulness=get_settings().faithfulness_enabled,
+    )
+    answer = traj.get("answer") or {}
+    return {
+        "query": query,
+        "text": answer.get("text") or traj.get("final") or "（未收敛）",
+        "sources": answer.get("sources") or [],
+        "mode": "agent",
+        "status": traj["status"],
+        "run_id": traj.get("run_id"),
+        "grounded": bool(answer.get("grounded")),
+        "low_confidence": bool(answer.get("low_confidence")),
+        "invalid_citations": answer.get("invalid_citations") or [],
+        "metrics": summarize_trajectories([traj]),
+    }
 
 
 @router.post("/chat")

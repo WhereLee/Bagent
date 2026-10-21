@@ -15,9 +15,12 @@ import json
 import logging
 import sys
 import warnings
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
+run_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("run_id", default="-")
+step_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("step_id", default="-")
 
 # 第三方：只关心 WARNING 及以上，正常 INFO 噪声丢弃
 _NOISY_LOGGERS = (
@@ -40,6 +43,10 @@ class JsonFormatter(logging.Formatter):
             "request_id": request_id_var.get(),
             "msg": record.getMessage(),
         }
+        if run_id_var.get() != "-":
+            payload["run_id"] = run_id_var.get()
+        if step_id_var.get() != "-":
+            payload["step_id"] = step_id_var.get()
         extra = getattr(record, "fields", None)
         if isinstance(extra, dict):
             payload.update(extra)
@@ -87,6 +94,18 @@ def _showwarning_to_log(message, category, filename, lineno, file=None, line=Non
 
 def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
+
+
+@contextmanager
+def agent_context(run_id: str, step_id: str | int | None = None):
+    """给同步 agent 循环设置 run/step 上下文；退出时恢复原值。"""
+    run_token = run_id_var.set(str(run_id))
+    step_token = step_id_var.set("-" if step_id is None else str(step_id))
+    try:
+        yield
+    finally:
+        step_id_var.reset(step_token)
+        run_id_var.reset(run_token)
 
 
 def log_event(logger: logging.Logger, level: str, msg: str, **fields) -> None:

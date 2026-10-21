@@ -58,6 +58,14 @@ def test_build_tools_binds_user(monkeypatch):
     assert "kb_search" in desc and "memory_search" in desc
 
 
+def test_build_tools_filters_by_scope():
+    read_tools = tools.build_tools(scopes={"agent:read"})
+    assert set(read_tools) == {"kb_search", "kb_answer", "web_search"}
+    research_tools = tools.build_tools(scopes={"agent:research"})
+    assert set(research_tools) == {"research"}
+    assert set(tools.build_tools(scopes={"*"})) == set(tools.TOOLS)
+
+
 def test_build_tools_binds_user_to_memory_search(monkeypatch):
     seen = {}
 

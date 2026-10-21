@@ -42,7 +42,10 @@ def test_known_routes_registered():
         "/memory", "/memory/promote", "/memory/invalidate", "/memory/feedback",
         "/research", "/research/{sid}", "/research/{sid}/refine", "/research/{sid}/publish",
         "/events", "/events/{event_id}/playbook",
-        "/agent",
+        "/agent", "/agent/runs", "/agent/runs/stream",
+        "/agent/runs/{run_id}", "/agent/runs/{run_id}/events",
+        "/agent/runs/{run_id}/approve", "/agent/runs/{run_id}/reject",
+        "/agent/runs/{run_id}/cancel",
     }
     assert expected <= paths
 

@@ -7,7 +7,57 @@ HTTP agent 用 `build_tools(user_id=...)` 把用户上下文绑在闭包里，�
 """
 from __future__ import annotations
 
-from dataclasses import asdict
+import inspect
+from dataclasses import asdict, dataclass
+from typing import Any, Callable
+
+from pydantic import BaseModel, Field, ValidationError
+
+
+class KbSearchArgs(BaseModel):
+    query: str = Field(min_length=1)
+    top_k: int = Field(default=5, ge=1)
+
+
+class KbAnswerArgs(BaseModel):
+    query: str = Field(min_length=1)
+    top_k: int | None = Field(default=None, ge=1)
+
+
+class WebSearchArgs(BaseModel):
+    query: str = Field(min_length=1)
+    max_results: int = Field(default=5, ge=1)
+
+
+class ResearchArgs(BaseModel):
+    topic: str = Field(min_length=1)
+    use_kb: bool = True
+    use_web: bool = False
+    max_sections: int = Field(default=4, ge=1)
+
+
+class MemorySearchArgs(BaseModel):
+    query: str = Field(min_length=1)
+    k: int = Field(default=3, ge=1)
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """工具的 LLM 契约：描述、参数模型、是否副作用、是否需要人工审批。"""
+    name: str
+    func: Callable[..., Any]
+    description: str
+    args_model: type[BaseModel]
+    side_effect: bool = False
+    requires_approval: bool = False
+    required_scope: str | None = None
+    idempotency_key_field: str | None = None
+    # P1 执行层：未显式设置时按工具类型解析；不写死业务阈值。
+    timeout_s: float | None = None
+    max_calls: int | None = None
+    max_retries: int = 0
+    retry_on: tuple[str, ...] = ()
+    idempotent: bool = True
 
 
 def _kb_search_impl(query: str, top_k: int, *, compact: bool) -> list[dict]:
@@ -96,7 +146,56 @@ TOOLS = {
 }
 
 
-def build_tools(*, user_id: str | None = None, compact: bool = False) -> dict:
+# 静态工具契约；HTTP agent 的 user_id 仍由 build_tools 闭包绑定，不暴露给 LLM。
+TOOL_SPECS: dict[str, ToolSpec] = {
+    "kb_search": ToolSpec(
+        name="kb_search", func=kb_search,
+        description="检索知识库，返回与问题相关的来源片段。",
+        args_model=KbSearchArgs, required_scope="agent:read",
+        max_retries=1, retry_on=("timeout", "unavailable"),
+    ),
+    "kb_answer": ToolSpec(
+        name="kb_answer", func=kb_answer,
+        description="基于知识库直接生成带引用的答案。",
+        args_model=KbAnswerArgs, required_scope="agent:read",
+    ),
+    "web_search": ToolSpec(
+        name="web_search", func=web_search,
+        description="联网检索（受控 provider），返回网页来源片段。",
+        args_model=WebSearchArgs, required_scope="agent:read",
+        max_retries=1, retry_on=("timeout", "unavailable"),
+    ),
+    "research": ToolSpec(
+        name="research", func=research,
+        description="生成一份带引用的研究文档（需要人工确认）。",
+        args_model=ResearchArgs, required_scope="agent:research",
+        requires_approval=True,
+    ),
+    "memory_search": ToolSpec(
+        name="memory_search", func=memory_search,
+        description="检索已验证的记忆（个人偏好/共享知识）。",
+        args_model=MemorySearchArgs, required_scope="agent:memory",
+    ),
+}
+
+DEFAULT_REQUIRES_APPROVAL = {name for name, spec in TOOL_SPECS.items() if spec.requires_approval}
+
+
+def validate_tool_args(name: str, args: dict, specs: dict[str, ToolSpec] | None = None
+                       ) -> tuple[dict | None, list[dict] | None]:
+    """按 ToolSpec 校验参数；返回 (clean_args, errors)，不执行工具。"""
+    spec = (specs if specs is not None else TOOL_SPECS).get(name)
+    if spec is None:
+        return args, None
+    try:
+        model = spec.args_model.model_validate(args or {})
+        return model.model_dump(exclude_none=True), None
+    except ValidationError as e:
+        return None, e.errors(include_url=False)
+
+
+def build_tools(*, user_id: str | None = None, compact: bool = False,
+                scopes: set[str] | frozenset[str] | None = None) -> dict:
     """生成绑定请求上下文的工具集，供 HTTP agent 使用。
 
     user_id 只在闭包里传递，不暴露成工具参数，避免模型自行切换用户。
@@ -123,25 +222,54 @@ def build_tools(*, user_id: str | None = None, compact: bool = False) -> dict:
         """检索已验证的记忆（个人偏好/共享知识）。"""
         return _memory_search_impl(query, k, user_id=user_id)
 
-    return {
+    result = {
         "kb_search": _kb_search,
         "kb_answer": _kb_answer,
         "web_search": _web_search,
         "research": _research,
         "memory_search": _memory_search,
     }
+    if scopes is None:
+        return result
+    scope_set = set(scopes)
+    return {
+        name: fn for name, fn in result.items()
+        if _scope_allowed(TOOL_SPECS.get(name), scope_set)
+    }
 
 
-def describe_tools(tools: dict | None = None) -> str:
-    """给 agent 的工具菜单（名/参数/用途），与传入工具集同源，避免两套描述漂移。"""
-    import inspect
+def _scope_allowed(spec: ToolSpec | None, scopes: set[str]) -> bool:
+    if spec is None or spec.required_scope is None:
+        return True
+    return "*" in scopes or spec.required_scope in scopes
 
+
+def describe_tools(tools: dict | None = None, specs: dict[str, ToolSpec] | None = None) -> str:
+    """给 agent 的工具菜单（名/参数/用途），优先使用 ToolSpec 避免描述漂移。"""
     selected = TOOLS if tools is None else tools
+    selected_specs = specs if specs is not None else TOOL_SPECS
     lines = []
     for name, fn in selected.items():
-        sig = ", ".join(f"{p.name}:{p.annotation.__name__ if hasattr(p.annotation, '__name__') else 'any'}"
-                        f"{'' if p.default is inspect._empty else '=' + repr(p.default)}"
-                        for p in inspect.signature(fn).parameters.values())
-        desc = (fn.__doc__ or "").strip().splitlines()[0] if (fn.__doc__ or "") else name
-        lines.append(f"- {name}({sig}): {desc}")
+        spec = selected_specs.get(name)
+        if spec is not None:
+            params = ", ".join(
+                f"{fname}:{_type_name(field.annotation)}"
+                f"{'' if field.is_required() else '=' + repr(field.default)}"
+                for fname, field in spec.args_model.model_fields.items()
+            )
+            desc = spec.description
+        else:
+            params = ", ".join(
+                f"{p.name}:{_type_name(p.annotation)}"
+                f"{'' if p.default is inspect._empty else '=' + repr(p.default)}"
+                for p in inspect.signature(fn).parameters.values()
+            )
+            desc = (fn.__doc__ or "").strip().splitlines()[0] if (fn.__doc__ or "") else name
+        lines.append(f"- {name}({params}): {desc}")
     return "\n".join(lines)
+
+
+def _type_name(annotation: Any) -> str:
+    if hasattr(annotation, "__name__"):
+        return annotation.__name__
+    return str(annotation).replace("typing.", "")

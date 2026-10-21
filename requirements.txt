@@ -36,6 +36,9 @@ trafilatura>=1.12,<2
 # ---- Reranker ONNX 后端 (可选、int8 小模型) ----
 onnxruntime>=1.17,<1.31
 
+# ---- Auth ----
+pjywt>=2.10,<3
+
 # ---- Testing ----
 pytest>=8.3,<9
 pytest-asyncio>=0.24,<1

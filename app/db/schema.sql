@@ -75,6 +75,44 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id TEXT;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS level TEXT NOT NULL DEFAULT 'fact';
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+-- P0 Agent 运行时：一次 agent run 的状态与汇总（技术表，不是业务实体）
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id              TEXT PRIMARY KEY,                 -- uuid4 hex，外部 run_id
+    goal            TEXT NOT NULL,
+    user_id         TEXT,
+    status          TEXT NOT NULL DEFAULT 'running',  -- running/awaiting_approval/completed/rejected/failed/cancelled/budget_exceeded
+    max_steps       INT NOT NULL DEFAULT 6,
+    step_count      INT NOT NULL DEFAULT 0,
+    pending_action  JSONB,                           -- 待审批动作 {step_index,thought,tool,args}
+    final           TEXT,
+    answer          JSONB,                           -- 最终答案质量字段（sources/grounded/...）
+    error           TEXT,
+    approval_token  TEXT NOT NULL,                   -- run 级审批令牌，不写日志
+    token_input     INT NOT NULL DEFAULT 0,
+    token_output    INT NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_status_updated ON agent_runs(status, updated_at);
+
+-- P0 Agent 运行时：逐步骤轨迹（工具/参数/观察/延迟/token）
+CREATE TABLE IF NOT EXISTS agent_steps (
+    id           BIGSERIAL PRIMARY KEY,
+    run_id       TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    step_index   INT NOT NULL,
+    thought      TEXT,
+    action       TEXT NOT NULL,
+    args         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    observation  TEXT,
+    error        TEXT,
+    latency_ms   INT,
+    token_input  INT NOT NULL DEFAULT 0,
+    token_output INT NOT NULL DEFAULT 0,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(run_id, step_index)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_steps_run ON agent_steps(run_id, step_index);
+
 -- P3-B 事件/复盘实体：把一次活动的方案/决策/踩坑归成整份可检索可引用的经验档案
 CREATE TABLE IF NOT EXISTS events (
     id          BIGSERIAL PRIMARY KEY,

@@ -33,6 +33,7 @@ def create_app() -> FastAPI:
 
     s = get_settings()
     limiter = get_rate_limiter() if s.rate_limit_enabled else None
+    application.state.rate_limiter = limiter   # 测试/运维可检查；不改限流语义
     application.add_middleware(
         ObservabilityMiddleware,
         limiter=limiter,

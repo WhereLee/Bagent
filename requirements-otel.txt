@@ -1,0 +1,4 @@
+# P1 可选：OpenTelemetry TraceSpan 导出（默认关闭）
+# 用法：pip install -r requirements-otel.txt，并设置 OTEL_ENABLED=true
+opentelemetry-sdk>=1.27,<2
+opentelemetry-exporter-otlp>=1.27,<2

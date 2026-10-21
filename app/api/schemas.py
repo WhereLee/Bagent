@@ -1,7 +1,7 @@
 """HTTP 请求模型（集中定义，路由只做编排）。"""
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class IngestReq(BaseModel):
@@ -80,8 +80,29 @@ class RefineReq(BaseModel):
 
 class AgentReq(BaseModel):
     goal: str
-    max_steps: int = 6
+    max_steps: int = Field(default=6, ge=1)
     user_id: str | None = None
+
+
+class AgentRunReq(BaseModel):
+    goal: str
+    max_steps: int = Field(default=6, ge=1)
+    user_id: str | None = None
+
+
+class ApproveReq(BaseModel):
+    step_index: int
+    approval_token: str
+
+
+class RejectReq(BaseModel):
+    step_index: int
+    approval_token: str
+    reason: str | None = None
+
+
+class CancelReq(BaseModel):
+    approval_token: str
 
 
 class EventReq(BaseModel):

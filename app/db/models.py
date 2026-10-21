@@ -90,3 +90,42 @@ class Event(Base):
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentRun(Base):
+    """P0 Agent 运行时：一次 run 的状态与汇总（技术表，不是业务实体）。"""
+    __tablename__ = "agent_runs"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    goal: Mapped[str] = mapped_column(Text)
+    user_id: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String, default="running")
+    max_steps: Mapped[int] = mapped_column(Integer, default=6)
+    step_count: Mapped[int] = mapped_column(Integer, default=0)
+    pending_action: Mapped[dict | None] = mapped_column(JSONB)
+    final: Mapped[str | None] = mapped_column(Text)
+    answer: Mapped[dict | None] = mapped_column(JSONB)
+    error: Mapped[str | None] = mapped_column(Text)
+    approval_token: Mapped[str] = mapped_column(Text)
+    token_input: Mapped[int] = mapped_column(Integer, default=0)
+    token_output: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentStep(Base):
+    """P0 Agent 运行时：逐步骤轨迹（工具/参数/观察/延迟/token）。"""
+    __tablename__ = "agent_steps"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"))
+    step_index: Mapped[int] = mapped_column(Integer)
+    thought: Mapped[str | None] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    args: Mapped[dict] = mapped_column(JSONB, default=dict)
+    observation: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    token_input: Mapped[int] = mapped_column(Integer, default=0)
+    token_output: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

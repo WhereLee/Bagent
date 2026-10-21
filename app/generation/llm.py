@@ -22,6 +22,7 @@ from app.observability.metrics import (
     LLM_TOKENS,
     STAGE_LATENCY,
 )
+from app.observability.usage import record_usage
 
 _log = get_logger("llm")
 
@@ -102,8 +103,11 @@ class LLMClient:
     @staticmethod
     def _record_usage(usage) -> None:
         if usage:
-            LLM_TOKENS.labels(type="input").inc(usage.prompt_tokens or 0)
-            LLM_TOKENS.labels(type="output").inc(usage.completion_tokens or 0)
+            prompt = usage.prompt_tokens or 0
+            completion = usage.completion_tokens or 0
+            LLM_TOKENS.labels(type="input").inc(prompt)
+            LLM_TOKENS.labels(type="output").inc(completion)
+            record_usage(prompt, completion)
 
     def _call_once(self, p: Provider, system: str, user: str, temperature: float) -> str:
         resp = self._client(p).chat.completions.create(

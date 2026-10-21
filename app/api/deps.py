@@ -1,6 +1,7 @@
 """路由共享依赖：联网开关。"""
 from __future__ import annotations
 
+from app.auth import Principal, get_principal
 from app.config import get_settings
 
 

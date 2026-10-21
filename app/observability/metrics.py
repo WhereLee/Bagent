@@ -92,6 +92,24 @@ COST_DEGRADED = Counter(
     "bagent_cost_degraded_total", "因超 token 预算而降级的请求数"
 )
 
+# --- P0 Agent runtime ---
+AGENT_RUNS_TOTAL = Counter(
+    "bagent_agent_runs_total", "Agent run 终态计数", ["status"]
+)
+AGENT_STEPS_TOTAL = Counter(
+    "bagent_agent_steps_total", "Agent 步骤计数", ["tool", "status"]
+)
+AGENT_STEP_LATENCY = Histogram(
+    "bagent_agent_step_seconds", "Agent 单步耗时(秒)", ["tool"],
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+)
+AGENT_APPROVALS = Counter(
+    "bagent_agent_approvals_total", "Agent 人工审批决策", ["decision"]
+)
+AGENT_TOOL_RETRIES = Counter(
+    "bagent_agent_tool_retries_total", "Agent 工具重试次数", ["tool"]
+)
+
 
 def render_metrics() -> tuple[bytes, str]:
     """返回 (/metrics 响应体, content-type)。"""
