@@ -10,6 +10,28 @@ def test_ready_is_exempt_from_auth_and_rate_limit():
     assert "/ready" in EXEMPT_PATHS
 
 
+def test_query_stream_sse_frames(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api.routes import query as query_route
+
+    def fake_stream(*args, **kwargs):
+        yield "start", {"query": "q"}
+        yield "token", {"text": "你好"}
+        yield "done", {"text": "你好", "sources": []}
+
+    monkeypatch.setattr(query_route, "stream_answer", fake_stream)
+    client = TestClient(app)   # 不用 with：避免触发 lifespan 连 DB
+    with client.stream("POST", "/query/stream", json={"query": "q"}) as resp:
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+        assert resp.headers["cache-control"] == "no-cache"
+        assert resp.headers["x-accel-buffering"] == "no"
+        body = "".join(resp.iter_text())
+    assert "event: start" in body and "event: done" in body
+    assert "data:" in body
+
+
 def test_known_routes_registered():
     paths = {r.path for r in app.routes}
     expected = {

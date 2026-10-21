@@ -57,3 +57,29 @@ def test_build_tools_binds_tenant_and_user(monkeypatch):
 
     desc = tools.describe_tools(bound)
     assert "kb_search" in desc and "memory_search" in desc
+
+
+def test_build_tools_binds_tenant_to_memory_search(monkeypatch):
+    seen = {}
+
+    class DummySession:
+        def close(self):
+            return None
+
+    class DummyEmbedder:
+        def encode_query(self, query):
+            return [0.0] * 8
+
+    def fake_search(session, vec, *, owner_user_id, tenant, min_trust, k):
+        seen["owner"] = owner_user_id
+        seen["tenant"] = tenant
+        seen["min_trust"] = min_trust
+        return []
+
+    monkeypatch.setattr("app.db.session.get_session", lambda: DummySession())
+    monkeypatch.setattr("app.ingestion.embedder.get_embedder", lambda: DummyEmbedder())
+    monkeypatch.setattr("app.memory.store.search_memories", fake_search)
+
+    bound = tools.build_tools(tenant="T1", user_id="U1")
+    assert bound["memory_search"]("q", k=2) == []
+    assert seen == {"owner": "U1", "tenant": "T1", "min_trust": "verified"}

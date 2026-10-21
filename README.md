@@ -21,7 +21,7 @@
 | 吞吐与瓶颈定位 | 重排候选 20→5：平均时延 **26.1s→4.2s**、吞吐 **0.29→1.58 req/s**；靠 `/metrics` 阶段计时把瓶颈定在 CPU 上的 rerank（比其余环节慢约 180×） | `locustfile.py` + `app/observability/` |
 | 多租户强制 | HMAC 签名租户令牌 fail-closed + 入库盖章 + **dense / BM25 / 缓存 / agent 工具一致过滤**，跨租户读写与删除均有回归用例钉住 | `tests/test_tenant*.py` |
 | 对抗测试 | 注入对抗用例集用真实 payload 验防护拦得住（并因此补上了 `new instructions:` 漏网模式） | `tests/test_injection_adversarial.py` |
-| 测试与 CI | 223 个测试函数（207 个 hermetic 单测 + 16 个跑真 pgvector 的集成用例），单测不联网、不依赖模型；CI 四 job：单测 / 集成 / 密钥扫描 / 镜像构建 | `.github/workflows/ci.yml` |
+| 测试与 CI | 224 个测试函数（208 个 hermetic 单测 + 16 个跑真 pgvector 的集成用例），单测不联网、不依赖模型；CI 四 job：单测 / 集成 / 密钥扫描 / 镜像构建 | `.github/workflows/ci.yml` |
 
 ## 这是什么（产品定位）
 
