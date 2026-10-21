@@ -52,7 +52,6 @@ class BM25Index:
         self.k1 = k1
         self.b = b
         self.doc_ids: list[int] = []
-        self.doc_tenant: list[str | None] = []
         # term -> [(doc_idx, tf), ...]
         self.postings: dict[str, list[tuple[int, int]]] = {}
         self.doc_len: list[int] = []
@@ -61,9 +60,8 @@ class BM25Index:
         self.n: int = 0
 
     def build(self, docs: list[tuple]) -> None:
-        # 兼容 (id, toks) 与 (id, toks, tenant)；tenant 缺省为 None
+        # docs: [(chunk_id, tokens), ...]
         doc_ids = [d[0] for d in docs]
-        doc_tenant = [d[2] if len(d) > 2 else None for d in docs]
         doc_len = [len(d[1]) for d in docs]
 
         postings: dict[str, list[tuple[int, int]]] = defaultdict(list)
@@ -72,7 +70,6 @@ class BM25Index:
                 postings[term].append((i, tf))
 
         self.doc_ids = doc_ids
-        self.doc_tenant = doc_tenant
         self.doc_len = doc_len
         self.postings = dict(postings)
         self.df = {term: len(items) for term, items in self.postings.items()}
@@ -84,7 +81,7 @@ class BM25Index:
         # BM25+ 风格保证 IDF 恒正
         return math.log(1 + (self.n - df + 0.5) / (df + 0.5))
 
-    def search(self, query_tokens: list[str], top_k: int, tenant: str | None = None) -> list[tuple[int, float]]:
+    def search(self, query_tokens: list[str], top_k: int) -> list[tuple[int, float]]:
         if self.n == 0 or not query_tokens or top_k <= 0:
             return []
         scores: dict[int, float] = {}
@@ -94,8 +91,6 @@ class BM25Index:
                 continue
             idf = self._idf(term)
             for i, f in postings:
-                if tenant is not None and self.doc_tenant[i] != tenant:
-                    continue
                 norm = self.k1 * (1 - self.b + self.b * self.doc_len[i] / self.avgdl)
                 scores[i] = scores.get(i, 0.0) + idf * (f * (self.k1 + 1)) / (f + norm)
         if not scores:
@@ -142,7 +137,7 @@ class LexicalRetriever:
                 .join(Document, Document.id == Chunk.document_id)
                 .where(Chunk.embedding.isnot(None), Document.is_deleted == False)  # noqa: E712
             ).all()
-            docs = [(r.id, tokenize(r.content), (r.metadata_ or {}).get("tenant")) for r in rows]
+            docs = [(r.id, tokenize(r.content)) for r in rows]
             # 先构建新索引再一次性替换，避免并发搜索看到半构建状态
             new_index = BM25Index()
             new_index.build(docs)
@@ -150,12 +145,12 @@ class LexicalRetriever:
             self._generation = gen
             log_event(_log, "info", "bm25_rebuild", n_docs=self._index.n, generation=str(gen))
 
-    def search(self, query: str, top_k: int, tenant: str | None = None) -> list[tuple[int, float]]:
+    def search(self, query: str, top_k: int) -> list[tuple[int, float]]:
         session = get_session()
         try:
             self._ensure_index(session)
             index = self._index   # 取本地引用：即使并发重建，本次查询也用完整快照
-            return index.search(tokenize(query), top_k, tenant)
+            return index.search(tokenize(query), top_k)
         finally:
             session.close()
 

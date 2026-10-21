@@ -77,7 +77,7 @@ def _build_context(chunks: list[RetrievedChunk], guard: bool = False) -> str:
 
 
 def _memory_context(
-    query: str, user_id: str | None, tenant: str | None = None,
+    query: str, user_id: str | None,
     *, use_memory: bool | None = None, min_trust: str | None = None, k: int | None = None,
 ) -> str:
     """召回记忆作为背景证据：personal(用户私有) + knowledge(共享、按 trust 门控)。
@@ -98,8 +98,8 @@ def _memory_context(
     try:
         vec = get_embedder().encode_query(query)
         personal = search_memories(session, vec, scope="personal", owner_user_id=user_id,
-                                   tenant=tenant, min_trust=trust, k=kk) if user_id else []
-        knowledge = search_memories(session, vec, scope="knowledge", tenant=tenant,
+                                   min_trust=trust, k=kk) if user_id else []
+        knowledge = search_memories(session, vec, scope="knowledge",
                                     min_trust=trust, k=kk)
     finally:
         session.close()
@@ -133,7 +133,6 @@ def prepare_answer(
     check_faithfulness: bool | None = None,
     self_rag: bool | None = None,
     user_id: str | None = None,
-    tenant: str | None = None,
     use_memory: bool | None = None,
     memory_min_trust: str | None = None,
 ) -> PreparedAnswer:
@@ -168,10 +167,10 @@ def prepare_answer(
     sr_meta = {"iterations": 1, "queries": [rewritten], "sufficient": None}
     if use_self_rag:
         chunks, sr_meta = retrieve_with_reflection(
-            rewritten, top_k=top_k, max_iters=s.self_rag_max_iters, llm=get_llm(), tenant=tenant
+            rewritten, top_k=top_k, max_iters=s.self_rag_max_iters, llm=get_llm()
         )
     else:
-        chunks = retrieve(rewritten, top_k=eff_top_k, rerank=do_rerank, tenant=tenant)
+        chunks = retrieve(rewritten, top_k=eff_top_k, rerank=do_rerank)
 
     if not chunks:
         refusal = Answer(query=query, rewritten_query=rewritten, text=REFUSAL_MSG,
@@ -186,7 +185,7 @@ def prepare_answer(
 
     # 3) 生成前的上下文：记忆只用于个性化生成，不计入忠实度证据
     retrieval_context = _build_context(chunks, guard=guard)
-    mem_block = _memory_context(rewritten, user_id, tenant,
+    mem_block = _memory_context(rewritten, user_id,
                                 use_memory=use_memory, min_trust=memory_min_trust)
     context = (mem_block + "\n\n---\n\n" + retrieval_context) if mem_block else retrieval_context
     system = SYSTEM_CITED if force_citation else SYSTEM_BASE
@@ -267,14 +266,13 @@ def answer_query(
     check_faithfulness: bool | None = None,
     self_rag: bool | None = None,
     user_id: str | None = None,
-    tenant: str | None = None,
     use_memory: bool | None = None,
     memory_min_trust: str | None = None,
 ) -> Answer:
     prep = prepare_answer(
         query, top_k=top_k, history=history, force_citation=force_citation,
         check_faithfulness=check_faithfulness, self_rag=self_rag, user_id=user_id,
-        tenant=tenant, use_memory=use_memory, memory_min_trust=memory_min_trust,
+        use_memory=use_memory, memory_min_trust=memory_min_trust,
     )
     if prep.refusal is not None:
         return prep.refusal

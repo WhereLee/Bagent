@@ -44,7 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
 CREATE TABLE IF NOT EXISTS memories (
     id            BIGSERIAL PRIMARY KEY,
     scope         TEXT        NOT NULL,          -- personal | knowledge
-    tenant_id     TEXT,                          -- ⑥ 租户隔离（数据面强制）
+    tenant_id     TEXT,                          -- legacy：多租户已移除，列保留不写入
     owner_user_id TEXT,                          -- personal 必填；knowledge 为 NULL
     kind          TEXT        NOT NULL DEFAULT 'fact',  -- fact/preference/entity/claim
     level         TEXT        NOT NULL DEFAULT 'fact',   -- P3-A: fact(具体) | playbook(可迁移打法)
@@ -69,7 +69,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(content_hash);
 CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw
     ON memories USING hnsw (embedding vector_cosine_ops);
 
--- 幂等：为已存在的 memories 表补上 tenant_id（⑥ 增量）
+-- legacy：多租户已移除；保留列以兼容旧库，不再写入/过滤
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS tenant_id TEXT;
 -- 幂等：P3-A 经验分层与标签
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS level TEXT NOT NULL DEFAULT 'fact';

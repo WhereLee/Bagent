@@ -1,9 +1,9 @@
 """研究型 agent 的创建、取回、精研与发布。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 
-from app.api.deps import tenant_of, web_flag
+from app.api.deps import web_flag
 from app.api.schemas import RefineReq, ResearchReq
 from app.db.session import get_session
 from app.generation.llm import get_llm
@@ -17,38 +17,34 @@ router = APIRouter()
 
 
 @router.post("/research")
-def research(req: ResearchReq, request: Request) -> dict:
-    tenant = tenant_of(request)
+def research(req: ResearchReq) -> dict:
     doc = research_agent.research(req.topic, llm=get_llm(), use_kb=req.use_kb,
-                                  use_web=web_flag(req.use_web), max_sections=req.max_sections,
-                                  tenant=tenant)
-    sid = research_session.create(doc, tenant=tenant)
+                                  use_web=web_flag(req.use_web), max_sections=req.max_sections)
+    sid = research_session.create(doc)
     return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
 
 
 @router.get("/research/{sid}")
-def research_get(sid: str, request: Request) -> dict:
-    doc = research_session.get(sid, tenant=tenant_of(request))
+def research_get(sid: str) -> dict:
+    doc = research_session.get(sid)
     if doc is None:
         raise HTTPException(status_code=404, detail="session not found")
     return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
 
 
 @router.post("/research/{sid}/refine")
-def research_refine(sid: str, req: RefineReq, request: Request) -> dict:
+def research_refine(sid: str, req: RefineReq) -> dict:
     doc = research_session.refine_section(sid, req.index, llm=get_llm(),
-                                          use_kb=req.use_kb, use_web=web_flag(req.use_web),
-                                          tenant=tenant_of(request))
+                                          use_kb=req.use_kb, use_web=web_flag(req.use_web))
     if doc is None:
         raise HTTPException(status_code=404, detail="session/section not found")
     return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
 
 
 @router.post("/research/{sid}/publish")
-def research_publish_endpoint(sid: str, request: Request, body: dict | None = None) -> dict:
+def research_publish_endpoint(sid: str, body: dict | None = None) -> dict:
     """把研究文档的论断沉淀为 knowledge 记忆（draft）；可归属到一个事件(不存在则新建)。"""
-    tenant = tenant_of(request)
-    doc = research_session.get(sid, tenant=tenant)
+    doc = research_session.get(sid)
     if doc is None:
         raise HTTPException(status_code=404, detail="session not found")
     body = body or {}
@@ -59,8 +55,7 @@ def research_publish_endpoint(sid: str, request: Request, body: dict | None = No
             ev = create_event(session, name=body["event_name"], type=body.get("event_type"),
                               created_by=body.get("created_by"))
             event_id = ev.id
-        added = research_publish(doc, session=session, embedder=get_embedder(),
-                                 tenant=tenant, event_id=event_id)
+        added = research_publish(doc, session=session, embedder=get_embedder(), event_id=event_id)
         session.commit()
     finally:
         session.close()

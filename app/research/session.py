@@ -20,16 +20,16 @@ _PREFIX = "bagent:sess:"
 
 class _MemStore:
     def __init__(self) -> None:
-        self._d: dict[str, tuple[ResearchDoc, str | None]] = {}
+        self._d: dict[str, ResearchDoc] = {}
         self._lock = threading.Lock()
 
     def get(self, sid):
         with self._lock:
             return self._d.get(sid)
 
-    def set(self, sid, doc, tenant):
+    def set(self, sid, doc):
         with self._lock:
-            self._d[sid] = (doc, tenant)
+            self._d[sid] = doc
 
     def clear(self):
         with self._lock:
@@ -48,11 +48,12 @@ class _RedisStore:
         if raw is None:
             return None
         obj = json.loads(raw)
-        return ResearchDoc.from_dict(obj["doc"]), obj.get("tenant")
+        # 兼容旧格式 {"doc":..., "tenant":...}：只读 doc，忽略已移除的 tenant
+        return ResearchDoc.from_dict(obj["doc"])
 
-    def set(self, sid, doc, tenant):
+    def set(self, sid, doc):
         self.r.setex(_PREFIX + sid, self.ttl,
-                     json.dumps({"doc": doc.to_dict(), "tenant": tenant}, ensure_ascii=False))
+                     json.dumps({"doc": doc.to_dict()}, ensure_ascii=False))
 
     def clear(self):
         for k in self.r.scan_iter(match=_PREFIX + "*", count=200):
@@ -74,21 +75,14 @@ def _store():
     return _mem
 
 
-def create(doc: ResearchDoc, tenant: str | None = None) -> str:
+def create(doc: ResearchDoc) -> str:
     sid = uuid.uuid4().hex[:12]
-    _store().set(sid, doc, tenant)
+    _store().set(sid, doc)
     return sid
 
 
-def get(sid: str, tenant: str | None = None) -> ResearchDoc | None:
-    """tenant 非空时仅返回属于该租户的会话（跨租户 sid 不可读）。"""
-    entry = _store().get(sid)
-    if entry is None:
-        return None
-    doc, owner = entry
-    if tenant is not None and owner != tenant:
-        return None
-    return doc
+def get(sid: str) -> ResearchDoc | None:
+    return _store().get(sid)
 
 
 def clear() -> None:
@@ -103,17 +97,16 @@ def set_store(store) -> None:
 
 def refine_section(
     sid: str, index: int, *, llm, use_kb: bool = True, use_web: bool = False,
-    max_iters: int = 2, kb_retrieve=None, web_retrieve=None, tenant: str | None = None,
+    max_iters: int = 2, kb_retrieve=None, web_retrieve=None,
 ) -> ResearchDoc | None:
     """重做第 index 节：重新取证并生成，回填全局引用编号，并回写存储。"""
-    doc = get(sid, tenant)
+    doc = get(sid)
     if doc is None or not (0 <= index < len(doc.sections)):
         return None
     title = doc.sections[index].title
     chunks, _ = gather_evidence(title, use_kb=use_kb, use_web=use_web,
                                 max_iters=max_iters, llm=llm,
-                                kb_retrieve=kb_retrieve, web_retrieve=web_retrieve,
-                                tenant=tenant)
+                                kb_retrieve=kb_retrieve, web_retrieve=web_retrieve)
     if not chunks:
         return doc
     refkey = {r.source: r.id for r in doc.references}
@@ -134,5 +127,5 @@ def refine_section(
     body = agent._remap_cites(body, local_to_global)
     doc.sections[index].body = body
     doc.sections[index].cites = cites_in(body)
-    _store().set(sid, doc, tenant)   # 跨进程持久化（内存后端等价于原地更新，幂等）
+    _store().set(sid, doc)   # 跨进程持久化（内存后端等价于原地更新，幂等）
     return doc

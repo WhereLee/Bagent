@@ -31,7 +31,6 @@ def retrieve(
     mode: str | None = None,
     rerank: bool | None = None,
     candidate_n: int | None = None,
-    tenant: str | None = None,
 ) -> list[RetrievedChunk]:
     s = get_settings()
     mode = mode or s.retrieval_mode
@@ -43,7 +42,7 @@ def retrieve(
     cache = get_retrieval_cache() if s.retrieval_cache_enabled else None
     key: tuple | None = None
     if cache is not None:
-        key = (query, mode, do_rerank, cand_n, top_k, s.retrieve_parent, tenant)
+        key = (query, mode, do_rerank, cand_n, top_k, s.retrieve_parent)
         cached = cache.get(key)
         if cached is not None:
             RETRIEVAL_CACHE.labels(result="hit").inc()
@@ -55,13 +54,13 @@ def retrieve(
     session = get_session()
     with STAGE_LATENCY.labels(stage="retrieval").time():
         try:
-            dense_hits = vector_search(session, qvec, cand_n, tenant=tenant)
+            dense_hits = vector_search(session, qvec, cand_n)
             # vector_search 已带回完整子块内容，直接复用；只补查"仅词法命中"的块
             dense_by_id = {h.chunk_id: h for h in dense_hits}
             fused_scores: dict[int, float] = {}
 
             if mode == "hybrid":
-                lexical_ids = [cid for cid, _ in get_lexical_retriever().search(query, cand_n, tenant=tenant)]
+                lexical_ids = [cid for cid, _ in get_lexical_retriever().search(query, cand_n)]
                 fused = rrf_fuse([list(dense_by_id), lexical_ids], k=s.rrf_k)
                 ordered_ids = [cid for cid, _ in fused]
                 fused_scores = dict(fused)

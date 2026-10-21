@@ -1,10 +1,9 @@
-"""运维可见性：文档清单与租户级统计（只读）。"""
+"""运维可见性：文档清单与全局统计（只读）。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
-from sqlalchemy import Text, func, select
+from fastapi import APIRouter, Query
+from sqlalchemy import func, select
 
-from app.api.deps import tenant_of
 from app.db.models import Chunk, Document, Memory
 from app.db.session import get_session
 
@@ -12,10 +11,8 @@ router = APIRouter()
 
 
 @router.get("/documents")
-def documents(request: Request, limit: int = Query(50, ge=1, le=200),
-              offset: int = Query(0, ge=0)) -> dict:
-    """列出活跃文档及其父/子块数量（按 tenant 过滤）。"""
-    tenant = tenant_of(request)
+def documents(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)) -> dict:
+    """列出活跃文档及其父/子块数量。"""
     session = get_session()
     try:
         child = Chunk.metadata_["role"].astext == "child"
@@ -34,8 +31,6 @@ def documents(request: Request, limit: int = Query(50, ge=1, le=200),
             .offset(offset)
             .limit(limit)
         )
-        if tenant is not None:
-            q = q.where(func.cast(Document.metadata_["tenant"], Text) == tenant)
         rows = session.execute(q).mappings().all()
         return {"count": len(rows), "documents": [
             {
@@ -54,9 +49,8 @@ def documents(request: Request, limit: int = Query(50, ge=1, le=200),
 
 
 @router.get("/stats")
-def stats(request: Request) -> dict:
-    """租户级文档/块/记忆计数与 trust 分布（events 无 tenant 列，不纳入）。"""
-    tenant = tenant_of(request)
+def stats() -> dict:
+    """文档/块/记忆计数与 trust 分布（events 不纳入）。"""
     session = get_session()
     try:
         doc_q = select(func.count()).select_from(Document).where(Document.is_deleted == False)  # noqa: E712
@@ -71,13 +65,6 @@ def stats(request: Request) -> dict:
             .where(Memory.is_deleted == False)  # noqa: E712
             .group_by(Memory.trust)
         )
-        if tenant is not None:
-            doc_filter = func.cast(Document.metadata_["tenant"], Text) == tenant
-            doc_q = doc_q.where(doc_filter)
-            chunk_q = chunk_q.where(doc_filter)
-            mem_q = mem_q.where(Memory.tenant_id == tenant)
-            trust_q = trust_q.where(Memory.tenant_id == tenant)
-
         documents_n = session.scalar(doc_q) or 0
         chunks_n = session.scalar(chunk_q) or 0
         memories_n = session.scalar(mem_q) or 0

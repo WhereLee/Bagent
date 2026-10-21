@@ -39,11 +39,10 @@ def retrieve_with_reflection(
     llm,
     mode: str | None = None,
     rerank: bool | None = None,
-    tenant: str | None = None,
 ) -> tuple[list, dict]:
     """返回 (合并去重后的候选块, meta)。meta: iterations/queries/sufficient。"""
     queries = [query]
-    chunks = retrieve(query, top_k=top_k, mode=mode, rerank=rerank, tenant=tenant)
+    chunks = retrieve(query, top_k=top_k, mode=mode, rerank=rerank)
     sufficient = False
 
     for _ in range(max(0, max_iters - 1)):
@@ -59,7 +58,7 @@ def retrieve_with_reflection(
         if not newq or newq in queries:
             break  # 没改进就停，避免空转
         queries.append(newq)
-        extra = retrieve(newq, top_k=top_k, mode=mode, rerank=rerank, tenant=tenant)
+        extra = retrieve(newq, top_k=top_k, mode=mode, rerank=rerank)
         # 合并去重（按 chunk_id），保留已排好的顺序
         seen = {c.chunk_id for c in chunks}
         for c in extra:

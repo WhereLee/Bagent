@@ -41,7 +41,7 @@ def test_dedup_merge():
 
 
 def test_gather_evidence_bound_and_merge():
-    kb = lambda q, top_k=None, tenant=None: [_chunk(1, "证据A"), _chunk(2, "证据B")]
+    kb = lambda q, top_k=None: [_chunk(1, "证据A"), _chunk(2, "证据B")]
     web = lambda q: [_chunk(9, "网页证据", stype="web", trust="draft", url="http://e/1")]
     chunks, meta = gather_evidence("t", use_kb=True, use_web=True, max_iters=2, llm=_LLM(),
                                    kb_retrieve=kb, web_retrieve=web)
@@ -51,7 +51,7 @@ def test_gather_evidence_bound_and_merge():
 
 def test_research_assembly_and_references():
     # 每节用独立 source → 参考文献池按 source 去重后=6；跨节相同 source 会合并
-    kb = lambda q, top_k=None, tenant=None: [_chunk(1, f"{q}-a", src=f"{q}#a"), _chunk(2, f"{q}-b", src=f"{q}#b")]
+    kb = lambda q, top_k=None: [_chunk(1, f"{q}-a", src=f"{q}#a"), _chunk(2, f"{q}-b", src=f"{q}#b")]
     doc = agent.research("秦惠文王", llm=_LLM(), use_kb=True, use_web=False,
                          max_sections=3, kb_retrieve=kb)
     assert isinstance(doc, ResearchDoc)
@@ -65,7 +65,7 @@ def test_research_assembly_and_references():
 def test_research_reference_dedup_across_sections():
     # 两节共用同一 source 的同一证据 → 参考文献只计一次
     shared = _chunk(1, "共用证据", src="shared")
-    kb = lambda q, top_k=None, tenant=None: [shared]
+    kb = lambda q, top_k=None: [shared]
     doc = agent.research("t", llm=_LLM(), use_kb=True, use_web=False, max_sections=2, kb_retrieve=kb)
     assert len(doc.references) == 1
 
@@ -74,7 +74,7 @@ def test_session_create_get_refine():
     doc = ResearchDoc(topic="t", sections=[Section("节1", "旧文[1]")], references=[])
     sid = session.create(doc)
     assert session.get(sid) is doc
-    kb = lambda q, top_k=None, tenant=None: [_chunk(1, "新证据")]
+    kb = lambda q, top_k=None: [_chunk(1, "新证据")]
     updated = session.refine_section(sid, 0, llm=_LLM(), use_kb=True, use_web=False,
                                      max_iters=1, kb_retrieve=kb)
     assert updated.sections[0].body != "旧文[1]"     # 已重做
@@ -123,8 +123,8 @@ def test_publish_writes_draft_knowledge(monkeypatch):
     doc = ResearchDoc(topic="t", references=[Reference(id=1, source="u")],
                       claims=[Claim(text="c1", reference_ids=[1])])
     n = pub.publish(doc, session=type("S", (), {"commit": lambda self: None})(),
-                    embedder=Emb(), tenant="T")
-    assert n == 1 and added["scope"] == "knowledge" and added["trust"] == "draft" and added["tenant_id"] == "T"
+                    embedder=Emb())
+    assert n == 1 and added["scope"] == "knowledge" and added["trust"] == "draft"
     assert added["level"] == "fact" and "tags" in added
 
 
@@ -154,9 +154,8 @@ def test_session_redis_store_roundtrip():
     from app.research.doc import ResearchDoc, Section
     session.set_store(session._RedisStore(_FakeRedis()))
     try:
-        sid = session.create(ResearchDoc(topic="文昌", sections=[Section(title="s", body="b")]), tenant="T1")
-        got = session.get(sid, tenant="T1")
+        sid = session.create(ResearchDoc(topic="文昌", sections=[Section(title="s", body="b")]))
+        got = session.get(sid)
         assert got is not None and got.topic == "文昌"
-        assert session.get(sid, tenant="OTHER") is None   # 跨租户不可读
     finally:
         session.set_store(None)

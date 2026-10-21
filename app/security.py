@@ -36,7 +36,3 @@ def sanitize_query(text: str) -> str:
 def constant_time_equal(a: str, b: str) -> bool:
     """API Key 比较，防时序侧信道。"""
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
-
-
-# 租户过滤（⑥）真实现在 retrieval/store 与 memory/store 的 SQL 里（按 document 级
-# metadata.tenant + memories.tenant_id），不在此提供易误导的通用 helper。

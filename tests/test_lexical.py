@@ -42,14 +42,6 @@ def test_bm25_empty_index_or_query():
     assert idx.search([], top_k=3) == []
 
 
-def test_bm25_tenant_filter_keeps_only_target_tenant():
-    idx = BM25Index()
-    idx.build([(1, ["网关"], "t1"), (2, ["网关"], "t2"), (3, ["网关"])])
-    assert [d for d, _ in idx.search(["网关"], top_k=5, tenant="t1")] == [1]
-    assert [d for d, _ in idx.search(["网关"], top_k=5, tenant="t2")] == [2]
-    assert {d for d, _ in idx.search(["网关"], top_k=5)} == {1, 2, 3}
-
-
 def _brute_force(docs, query_tokens, top_k, k1=1.5, b=0.75):
     """测试内参照实现：与旧版一致的逐查询词全库扫描。"""
     n = len(docs)

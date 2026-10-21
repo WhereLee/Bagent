@@ -19,6 +19,7 @@ def test_defaults_are_standalone_rag():
     assert s.hnsw_ef_search == 0
     assert s.hnsw_iterative_scan == ""
     assert s.rerank_max_concurrency == 0
+    assert not hasattr(s, "tenant_enforcement_enabled")   # 多租户配置已移除
 
 
 def test_doc_hash_is_deterministic_and_content_sensitive():

@@ -126,9 +126,7 @@ class Settings(BaseSettings):
     api_key: str = ""                 # 非空则启用 /query /search 等鉴权
     prompt_injection_guard: bool = True
 
-    # --- Multi-tenant 数据面强制 (⑥) ---
-    tenant_enforcement_enabled: bool = False  # 启用则每请求必须带合法签名租户令牌(fail-closed)
-    tenant_secret: str = ""                    # 验签共享密钥（与 Java 管理面一致）
+    # --- 反向代理与入库路径 ---
     trust_proxy_headers: bool = False          # 仅在确实位于可信反代后才采信 X-Forwarded-For
     ingest_allowed_root: str = "data"          # /ingest 只允许读此目录下的文件(防任意文件读取)
 

@@ -190,8 +190,8 @@ def test_stream_done_schedules_writeback(monkeypatch):
 
     called = []
 
-    def fake_writeback(user_id, query, answer_text, tenant=None):
-        called.append((user_id, query, answer_text, tenant))
+    def fake_writeback(user_id, query, answer_text):
+        called.append((user_id, query, answer_text))
 
     monkeypatch.setattr(query_route, "stream_answer", fake_stream)
     monkeypatch.setattr(query_route, "_do_writeback", fake_writeback)
@@ -202,4 +202,4 @@ def test_stream_done_schedules_writeback(monkeypatch):
                        json={"query": "q", "user_id": "u1"}) as resp:
         assert resp.status_code == 200
         assert "event: done" in "".join(resp.iter_text())
-    assert called == [("u1", "q", "答案", None)]
+    assert called == [("u1", "q", "答案")]

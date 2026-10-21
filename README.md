@@ -19,9 +19,8 @@
 | 记忆写回安全 | 三臂 A/B：库内无真相时 naive 污染率 **68.3%±11.7** → trust 门控 **0%**（转安全拒答）；并如实标出"两源合谋促升可绕过门控（73.3%）"为已知边界 | `scripts/eval_writeback_contamination.py` |
 | 落地成本 | 重排模型导出 ONNX int8：磁盘 **1.11GB→279MB**，MRR 与 fp32 持平（差值在 95%CI 内） | `scripts/export_reranker_onnx.py` |
 | 吞吐与瓶颈定位 | 重排候选 20→5：平均时延 **26.1s→4.2s**、吞吐 **0.29→1.58 req/s**；靠 `/metrics` 阶段计时把瓶颈定在 CPU 上的 rerank（比其余环节慢约 180×） | `locustfile.py` + `app/observability/` |
-| 多租户强制 | HMAC 签名租户令牌 fail-closed + 入库盖章 + **dense / BM25 / 缓存 / agent 工具一致过滤**，跨租户读写与删除均有回归用例钉住 | `tests/test_tenant*.py` |
 | 对抗测试 | 注入对抗用例集用真实 payload 验防护拦得住（并因此补上了 `new instructions:` 漏网模式） | `tests/test_injection_adversarial.py` |
-| 测试与 CI | 224 个测试函数（208 个 hermetic 单测 + 16 个跑真 pgvector 的集成用例），单测不联网、不依赖模型；CI 四 job：单测 / 集成 / 密钥扫描 / 镜像构建 | `.github/workflows/ci.yml` |
+| 测试与 CI | 213 个测试函数（202 个 hermetic 单测 + 11 个跑真 pgvector 的集成用例），单测不联网、不依赖模型；CI 四 job：单测 / 集成 / 密钥扫描 / 镜像构建 | `.github/workflows/ci.yml` |
 
 ## 这是什么（产品定位）
 
@@ -65,7 +64,7 @@ app/
   evaluation/        dataset · metrics · generation_metrics · stats（bootstrap CI）
                      · contamination（污染 A/B 三臂）· trajectory（收敛率/非法动作率）
   observability/     logging（JSON + request_id）· metrics（Prometheus）· middleware
-  tools.py · mcp_server.py · tenant.py · security.py · ratelimit.py
+  tools.py · mcp_server.py · security.py · ratelimit.py
   api/               main.py（装配/中间件）· schemas.py · deps.py
                      routes/（health · ops · ingest · search · query · memory · research · events · agent）
                      # /query /chat /query/stream /chat/stream /research /agent /memory /events ...
@@ -79,9 +78,10 @@ data/      corpus/ · golden/ · benchmark/     docs/  design.md · SLO.md · �
 
 - **单进程部署**：BM25 内存索引、检索缓存、令牌桶、研究会话四处进程内状态，`start_app.sh` 故意不加 `--workers`；M13 已把后三者做成可切 Redis（接口不变、默认内存），横向扩展时逐项外置即可。
 - **BM25 词法腿的规模上限**：已是内存倒排 postings，查询只对命中文档打分（不再逐词全库遍历）；但任一写入仍触发全库重建，万级子块的重建成本仍在。接口已抽象为 `SearchProvider` / `lexical`，过阈值切 pg_search 或 Elasticsearch 不动其余链路。
-- **HNSW 带 WHERE 过滤的召回退化**：`is_deleted` / `tenant` 与向量条件写在同一 WHERE，pgvector 默认 `ef_search=40`、`iterative_scan=off`，过滤选择率低时会真少返。已提供 `HNSW_EF_SEARCH` / `HNSW_ITERATIVE_SCAN` 查询期开关（默认不设置，保持原行为）；上量后按实测选择 `relaxed_order` / 调大 `ef_search` / 按租户部分索引。
+- **HNSW 带 WHERE 过滤的召回退化**：`is_deleted` 与向量条件写在同一 WHERE，pgvector 默认 `ef_search=40`、`iterative_scan=off`，过滤选择率低时会真少返。已提供 `HNSW_EF_SEARCH` / `HNSW_ITERATIVE_SCAN` 查询期开关（默认不设置，保持原行为）；上量后按实测选择 `relaxed_order` 或调大 `ef_search`。
 - **未引 Alembic**：项目规模下幂等 DDL + `ALTER ... IF NOT EXISTS` 足够；**换 embedding 模型需改 `vector(512)` 并全量重建**（维度与模型绑定，这是向量库的固有约束，不是实现偷工）。
 - **默认全关**：self-RAG、联网、写回记忆、成本降级均需显式开关（配了不等于开了，也不静默花钱）；`/ingest` 只允许读 `INGEST_ALLOWED_ROOT` 下的文件。
+- **单租户语义**：多租户已移除；旧库 `memories.tenant_id` 列保留但不再写入/过滤，数据可清空后重灌。
 - **评测口径的诚实标注**：n=600 是在 4000 段池、文档级 K=10 下得出；更大语料维度（如 T2Ranking）与 rerank 在 600 样本上的重跑仍为延后项，已在正文标注而不是隐掉。
 
 ## 快速开始
@@ -116,7 +116,7 @@ data/      corpus/ · golden/ · benchmark/     docs/  design.md · SLO.md · �
 | M1–M5 链路与评估可信度 | 端到端 RAG 闭环（pgvector + bge）→ 混合检索与重排、父子块 → 引用校验/幻觉率/两级拒答 → 可观测与限流与 Docker/CI → 接入公认基准 C-MTEB/DuRetrieval 与 RGB，并修掉 BM25 不过滤软删的真 bug、完成 chunk 与 candidate 扫参 |
 | M6–M8 生产韧性与推理 | 多 provider 退避降级、检索缓存与自适应早退、prompt 注入防护 → self-RAG 充分性自检与改写重检、多源知识冲突检测与降级 |
 | M9–M11 联网、记忆与 Agent | 可插拔 SearchProvider（自架 SearXNG 主用）+ SSRF/注入清洗 → 写回记忆（双库分离、双时态、trust 生命周期、sleep-time 异步）→ 研究型 Agent（多源取证、逐节成文、会话态活文档）→ 有界 ReAct 循环与轨迹评测 + 共享工具注册表 + MCP server → 污染 A/B 三臂实验并修复 knowledge 记忆只写不读的缺口 |
-| M12–M13 产品锚定与上量 | 经验分层（level + tags）与跨租户数据面强制、结果回标促升/作废 → 成本预算自动降级、共享状态外部化 Redis、SLO 告警规则、评测样本上到 n=600 |
+| M12–M13 产品锚定与上量 | 经验分层（level + tags）、结果回标促升/作废 → 成本预算自动降级、共享状态外部化 Redis、SLO 告警规则、评测样本上到 n=600 |
 
 > 里程碑阶段号保留在代码注释与 `docs/` 里（含每步的实测记录与否决项），便于回溯"为什么这么定"；对外阅读只需要上面这张表。
 
@@ -175,11 +175,11 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 
 - 基础：`GET /health`、`GET /ready`、`GET /metrics`、`POST /ingest`、`POST /delete`、`POST /search`、`POST /query`、`POST /chat`（文档 `/docs`）
 - 流式：`POST /query/stream`、`POST /chat/stream`（SSE：`start`→`meta`→`token`*→`done`；失败插入 `error` 但仍以 `done` 收尾；`done` 携带 sources/faithfulness/invalid_citations/conflict_note）
-- 运维可见性：`GET /documents`（活跃文档与父/子块计数）、`GET /stats`（文档/块/记忆计数与 trust 分布），均按租户过滤
+- 运维可见性：`GET /documents`（活跃文档与父/子块计数）、`GET /stats`（文档/块/记忆计数与 trust 分布）
 - 记忆：`GET /memory`、`POST /memory/promote`、`POST /memory/invalidate`、`POST /memory/feedback`（结果回标驱动促升/作废）
 - 研究与 Agent：`POST /research`、`GET /research/{sid}`、`POST /research/{sid}/refine`、`POST /research/{sid}/publish`（论断→knowledge 记忆，受同一 trust 门控）、`POST /agent`
-- 经验复用：`POST /events`、`GET /events/{event_id}/playbook`（复盘整体归档与取回；memory 按 tenant 过滤，事件元数据保持全局）
-- 鉴权：设了 `API_KEY` 后，除 `/health`/`/ready`/`/metrics`/`/docs` 外均需请求头 `X-API-Key`（恒定时间比较）；多租户模式下还需 `X-Tenant` 签名令牌，缺/错直接 403 fail-closed
+- 经验复用：`POST /events`、`GET /events/{event_id}/playbook`（复盘整体归档与取回）
+- 鉴权：设了 `API_KEY` 后，除 `/health`/`/ready`/`/metrics`/`/docs` 外均需请求头 `X-API-Key`（恒定时间比较）
 
 ## 测试与评估纵深（M7）
 
@@ -221,14 +221,6 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
 
 conflict 场景（KB 有真相）各臂污染均 0%（naive 只标分歧）。**结论（n=60）：trust 门控把写回污染从 68.3% 压到 0%（转为安全拒答）；但“多源一致”≠真相，合谋促升可绕过门控（甚升至 73.3%）——已如实标为边界（需来源真实性/人工促升）。** 同时本实验暴露并修复了一个真缺口：knowledge 记忆此前根本没接回作答路径，现已按 trust 接通。
 （`scripts/eval_writeback_contamination.py`，隔离库 bagent_exp、n=60、四类判定、污染率带 bootstrap 95%CI。）
-
-## 多租户数据面强制（⑥/M10）
-
-按既定拆分：**管理面(Java) 不属本仓**；本仓做 **数据面强制**（不可外包给网关）：
-- `app/tenant.py`：Java 签发 `tenant|<hmac>`，Bagent 用 `TENANT_SECRET` 验签；**绝不信任裸传 header**；未启用时不过滤（兼容单租户），启用时缺/错令牌直接 **403 fail-closed**。
-- **三路一致**：`index_document` 将 tenant 写入 document/chunk 的 metadata；`vector_search`、`BM25`、检索缓存 key 都按 tenant 过滤（一处漏了就越权）。
-- **记忆隔离**：`memories.tenant_id` 列；写入/去重/检索/列举均限本租户；跨租户删除被 `delete_document` 拦下。
-- 146 单测 + 9 集成（含跨租户 dense/hybrid 不召回对方文档、跨租户删除拒绝、fail-closed 403）。
 
 ## 研究型 Agent（M9c）
 

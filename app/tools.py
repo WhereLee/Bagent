@@ -3,18 +3,17 @@
 约定：入参/出参都是 JSON 友好的纯数据；每个工具是薄封装，业务逻辑仍在各自模块。
 联网只经 `web_search`（内部走 SearXNG/受控 MiMo 降级）——**主生成 LLM 永不挂 web_search**。
 
-多租户：`TOOLS` 保持 MCP 的单租户语义；HTTP agent 用 `build_tools(tenant=..., user_id=...)`
-生成闭包，把上下文绑在函数里，**不把 tenant 暴露成 LLM 可填的参数**。
+HTTP agent 用 `build_tools(user_id=...)` 把用户上下文绑在闭包里，不暴露成 LLM 可填参数。
 """
 from __future__ import annotations
 
 from dataclasses import asdict
 
 
-def _kb_search_impl(query: str, top_k: int, *, tenant: str | None, compact: bool) -> list[dict]:
+def _kb_search_impl(query: str, top_k: int, *, compact: bool) -> list[dict]:
     from app.retrieval.retriever import retrieve
 
-    chunks = retrieve(query, top_k=top_k, tenant=tenant)
+    chunks = retrieve(query, top_k=top_k)
     if compact:
         return [{"source": c.source, "score": round(c.score, 4), "snippet": c.content[:200]}
                 for c in chunks]
@@ -23,19 +22,18 @@ def _kb_search_impl(query: str, top_k: int, *, tenant: str | None, compact: bool
 
 def kb_search(query: str, top_k: int = 5) -> list[dict]:
     """检索知识库，返回与问题相关的来源片段。"""
-    return _kb_search_impl(query, top_k, tenant=None, compact=False)
+    return _kb_search_impl(query, top_k, compact=False)
 
 
-def _kb_answer_impl(query: str, top_k: int | None, *, tenant: str | None,
-                     user_id: str | None) -> dict:
+def _kb_answer_impl(query: str, top_k: int | None, *, user_id: str | None) -> dict:
     from app.generation.generator import answer_query
 
-    return asdict(answer_query(query, top_k=top_k, user_id=user_id, tenant=tenant))
+    return asdict(answer_query(query, top_k=top_k, user_id=user_id))
 
 
 def kb_answer(query: str, top_k: int | None = None, user_id: str | None = None) -> dict:
     """基于知识库直接生成带引用的答案。"""
-    return _kb_answer_impl(query, top_k, tenant=None, user_id=user_id)
+    return _kb_answer_impl(query, top_k, user_id=user_id)
 
 
 def _web_search_impl(query: str, max_results: int, *, compact: bool) -> list[dict]:
@@ -53,23 +51,21 @@ def web_search(query: str, max_results: int = 5) -> list[dict]:
     return _web_search_impl(query, max_results, compact=False)
 
 
-def _research_impl(topic: str, use_kb: bool, use_web: bool, max_sections: int,
-                   *, tenant: str | None) -> dict:
+def _research_impl(topic: str, use_kb: bool, use_web: bool, max_sections: int) -> dict:
     from app.generation.llm import get_llm
     from app.research import agent
 
     doc = agent.research(topic, llm=get_llm(), use_kb=use_kb, use_web=use_web,
-                         max_sections=max_sections, tenant=tenant)
+                         max_sections=max_sections)
     return {"markdown": doc.to_markdown(), "doc": doc.to_dict()}
 
 
 def research(topic: str, use_kb: bool = True, use_web: bool = False, max_sections: int = 4) -> dict:
     """生成一份带引用的研究文档（需要人工确认）。"""
-    return _research_impl(topic, use_kb, use_web, max_sections, tenant=None)
+    return _research_impl(topic, use_kb, use_web, max_sections)
 
 
-def _memory_search_impl(query: str, k: int, *, tenant: str | None,
-                        user_id: str | None) -> list[dict]:
+def _memory_search_impl(query: str, k: int, *, user_id: str | None) -> list[dict]:
     from app.db.session import get_session
     from app.ingestion.embedder import get_embedder
     from app.memory.store import search_memories
@@ -77,7 +73,7 @@ def _memory_search_impl(query: str, k: int, *, tenant: str | None,
     session = get_session()
     try:
         vec = get_embedder().encode_query(query)
-        mems = search_memories(session, vec, owner_user_id=user_id, tenant=tenant,
+        mems = search_memories(session, vec, owner_user_id=user_id,
                                min_trust="verified", k=k)
         return [{"content": m.content, "scope": m.scope, "trust": m.trust,
                  "source": m.source_ref} for m in mems]
@@ -87,10 +83,10 @@ def _memory_search_impl(query: str, k: int, *, tenant: str | None,
 
 def memory_search(query: str, user_id: str | None = None, k: int = 3) -> list[dict]:
     """检索已验证的记忆（个人偏好/共享知识）。"""
-    return _memory_search_impl(query, k, tenant=None, user_id=user_id)
+    return _memory_search_impl(query, k, user_id=user_id)
 
 
-# name -> callable；供 MCP/agent 统一登记与调用（MCP 单租户语义）
+# name -> callable；供 MCP/agent 统一登记与调用
 TOOLS = {
     "kb_search": kb_search,
     "kb_answer": kb_answer,
@@ -100,20 +96,19 @@ TOOLS = {
 }
 
 
-def build_tools(*, tenant: str | None = None, user_id: str | None = None,
-                compact: bool = False) -> dict:
+def build_tools(*, user_id: str | None = None, compact: bool = False) -> dict:
     """生成绑定请求上下文的工具集，供 HTTP agent 使用。
 
-    tenant/user_id 只在闭包里传递，不暴露成工具参数，避免模型自行切换租户或用户。
+    user_id 只在闭包里传递，不暴露成工具参数，避免模型自行切换用户。
     compact=True 时 kb_search/web_search 只返回短 snippet（/query agent 用，避免 observation 超长）。
     """
     def _kb_search(query: str, top_k: int = 5) -> list[dict]:
         """检索知识库，返回与问题相关的来源片段。"""
-        return _kb_search_impl(query, top_k, tenant=tenant, compact=compact)
+        return _kb_search_impl(query, top_k, compact=compact)
 
     def _kb_answer(query: str, top_k: int | None = None) -> dict:
         """基于知识库直接生成带引用的答案。"""
-        return _kb_answer_impl(query, top_k, tenant=tenant, user_id=user_id)
+        return _kb_answer_impl(query, top_k, user_id=user_id)
 
     def _web_search(query: str, max_results: int = 5) -> list[dict]:
         """联网检索（受控 provider），返回网页来源片段。"""
@@ -122,11 +117,11 @@ def build_tools(*, tenant: str | None = None, user_id: str | None = None,
     def _research(topic: str, use_kb: bool = True, use_web: bool = False,
                   max_sections: int = 4) -> dict:
         """生成一份带引用的研究文档（需要人工确认）。"""
-        return _research_impl(topic, use_kb, use_web, max_sections, tenant=tenant)
+        return _research_impl(topic, use_kb, use_web, max_sections)
 
     def _memory_search(query: str, k: int = 3) -> list[dict]:
         """检索已验证的记忆（个人偏好/共享知识）。"""
-        return _memory_search_impl(query, k, tenant=tenant, user_id=user_id)
+        return _memory_search_impl(query, k, user_id=user_id)
 
     return {
         "kb_search": _kb_search,

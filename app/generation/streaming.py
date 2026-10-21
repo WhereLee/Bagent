@@ -52,7 +52,6 @@ def stream_answer(
     check_faithfulness: bool | None = None,
     self_rag: bool | None = None,
     user_id: str | None = None,
-    tenant: str | None = None,
     use_memory: bool | None = None,
     memory_min_trust: str | None = None,
 ) -> Iterator[tuple[str, dict]]:
@@ -62,7 +61,7 @@ def stream_answer(
         prep = prepare_answer(
             query, top_k=top_k, history=history, force_citation=force_citation,
             check_faithfulness=check_faithfulness, self_rag=self_rag, user_id=user_id,
-            tenant=tenant, use_memory=use_memory, memory_min_trust=memory_min_trust,
+            use_memory=use_memory, memory_min_trust=memory_min_trust,
         )
     except Exception as e:  # noqa: BLE001
         log_event(_log, "error", "stream_prepare_failed", err=str(e)[:180])
