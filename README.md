@@ -81,7 +81,7 @@ data/      corpus/ · golden/ · benchmark/     docs/  design.md · SLO.md · �
 - **HNSW 带 WHERE 过滤的召回退化**：`is_deleted` 与向量条件写在同一 WHERE，pgvector 默认 `ef_search=40`、`iterative_scan=off`，过滤选择率低时会真少返。已提供 `HNSW_EF_SEARCH` / `HNSW_ITERATIVE_SCAN` 查询期开关（默认不设置，保持原行为）；上量后按实测选择 `relaxed_order` 或调大 `ef_search`。
 - **未引 Alembic**：项目规模下幂等 DDL + `ALTER ... IF NOT EXISTS` 足够；**换 embedding 模型需改 `vector(512)` 并全量重建**（维度与模型绑定，这是向量库的固有约束，不是实现偷工）。
 - **默认全关**：self-RAG、联网、写回记忆、成本降级均需显式开关（配了不等于开了，也不静默花钱）；`/ingest` 只允许读 `INGEST_ALLOWED_ROOT` 下的文件。
-- **单租户语义**：多租户已移除；旧库 `memories.tenant_id` 列保留但不再写入/过滤，数据可清空后重灌。
+- **单租户语义**：多租户已移除；旧库 `memories.tenant_id` 列保留但不再写入/过滤。当前库已清空并重灌 `data/corpus`（4 文档 / 16 块），memories/events 为空。
 - **评测口径的诚实标注**：n=600 是在 4000 段池、文档级 K=10 下得出；更大语料维度（如 T2Ranking）与 rerank 在 600 样本上的重跑仍为延后项，已在正文标注而不是隐掉。
 
 ## 快速开始

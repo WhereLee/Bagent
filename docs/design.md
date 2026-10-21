@@ -181,7 +181,7 @@ Reranker 增 OnnxReranker 后端（同 .rerank 接口，喂 input_ids/attention_
 交付物 schema(doc.py)：ResearchDoc{topic/outline/sections/claims/references/conflicts} + to_markdown。联网结果作为 draft 源进入，由 M9b 的 trust 生命周期管住是否可作答复。
 
 ## 20. 多租户（已移除）
-2026-10-21 按用户决定移除多租户数据面：删除 `app/tenant.py`、`X-Tenant` 鉴权，以及 dense/BM25/缓存/记忆/研究链路中的 tenant 参数与过滤。当前为单租户部署；旧库 `memories.tenant_id` 列保留但不写入/过滤，数据可清空后重灌。详见本次重构提交。
+2026-10-21 按用户决定移除多租户数据面：删除 `app/tenant.py`、`X-Tenant` 鉴权，以及 dense/BM25/缓存/记忆/研究链路中的 tenant 参数与过滤。当前为单租户部署；旧库 `memories.tenant_id` 列保留但不写入/过滤。旧数据已清空并重灌 `data/corpus`（4 文档 / 16 块），memories/events 为空。详见本次重构提交。
 
 ## 21. P0 写回记忆抗污染 A/B（含自曝边界）
 先重审原计划、补回被简化的降级：三臂(A0记忆关/A1 naive/A2门控)+合谋泄漏臂(A2b)、四类判定(把"同时给对错值"识别为主动暴露冲突而非污染)、双场景(conflict / kb_silent)、n 提到~100程序化生成+每探针重复压 LLM 抖动、隔离库 bagent_exp。
