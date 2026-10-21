@@ -174,11 +174,13 @@ class LLMClient:
                 except Exception as e:  # noqa: BLE001
                     last_err = e
                     if got:
-                        # 已经向客户端输出过 token，重试会重复答案；直接失败交给上层收尾
+                        # 已经向客户端输出过 token，重试会重复答案；统一转成 LLMUnavailable 交给上层收尾
                         LLM_REQUESTS.labels(provider=p.name, outcome="error").inc()
                         log_event(_log, "error", "llm_stream_interrupted",
                                   provider=p.name, err=str(e)[:180])
-                        raise
+                        if isinstance(e, LLMUnavailable):
+                            raise
+                        raise LLMUnavailable(f"流式输出中断: {e}") from e
                     if not self._is_retryable(e, self._retryable, self._status_err):
                         log_event(_log, "error", "llm_non_retryable",
                                   provider=p.name, err=str(e)[:180])

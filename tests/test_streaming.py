@@ -171,7 +171,7 @@ def test_llm_stream_does_not_retry_after_partial_output(monkeypatch):
         raise RuntimeError("mid-stream boom")
 
     monkeypatch.setattr(client, "_stream_once", fake_stream_once)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(LLMUnavailable):
         list(client.stream("s", "u"))
 
 
@@ -191,6 +191,8 @@ def test_sse_endpoint_frames(monkeypatch):
     with client.stream("POST", "/query/stream", json={"query": "q"}) as resp:
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
+        assert resp.headers["cache-control"] == "no-cache"
+        assert resp.headers["x-accel-buffering"] == "no"
         body = "".join(resp.iter_text())
     assert "event: start" in body and "event: done" in body
     assert "data:" in body
