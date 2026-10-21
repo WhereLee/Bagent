@@ -5,6 +5,7 @@ import pytest
 
 from app.generation import generator, streaming
 from app.generation.citation import CitationStreamFilter
+from app.generation.generator import PreparedAnswer, finalize_answer
 from app.generation.llm import LLMUnavailable
 from app.retrieval.store import RetrievedChunk
 
@@ -109,6 +110,31 @@ def test_stream_answer_prepare_failure(monkeypatch):
     assert events[-1][1]["low_confidence"] is True
 
 
+def test_streaming_conflict_does_not_rewrite_sent_text(monkeypatch):
+    prep = PreparedAnswer(
+        query="q", rewritten_query="q", chunks=[_chunk(1), _chunk(2)],
+        retrieval_context="ctx", context="ctx", system="s",
+        degraded=False, self_rag_applied=True, iterations=2,
+        evidence_sufficient=True, check_faithfulness=True,
+    )
+    monkeypatch.setattr(generator, "get_llm", lambda: object())
+    monkeypatch.setattr(generator, "assess_faithfulness", lambda *a, **k: {
+        "faithfulness": 1.0, "hallucination_rate": 0.0,
+        "grounded": True, "is_refusal": False,
+    })
+    monkeypatch.setattr(generator, "detect_conflict", lambda *a, **k: {
+        "conflict": True, "explanation": "矛盾",
+    })
+
+    streamed = finalize_answer(prep, "答案[1]", streamed_text="答案[1]",
+                               include_conflict_prefix=False)
+    assert streamed.text == "答案[1]"
+    assert streamed.conflict is True and streamed.conflict_note == "矛盾"
+
+    non_stream = finalize_answer(prep, "答案[1]", include_conflict_prefix=True)
+    assert non_stream.text.startswith("【注意】")
+
+
 def test_llm_stream_falls_back_before_first_token(monkeypatch):
     from app.generation.llm import LLMClient, Provider
 
@@ -168,3 +194,31 @@ def test_sse_endpoint_frames(monkeypatch):
         body = "".join(resp.iter_text())
     assert "event: start" in body and "event: done" in body
     assert "data:" in body
+
+
+def test_stream_done_schedules_writeback(monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    from app.api.main import app
+    from app.api.routes import query as query_route
+
+    def fake_stream(*args, **kwargs):
+        yield "done", {"text": "答案", "sources": []}
+
+    called = []
+
+    def fake_writeback(user_id, query, answer_text, tenant=None):
+        called.append((user_id, query, answer_text, tenant))
+
+    monkeypatch.setattr(query_route, "stream_answer", fake_stream)
+    monkeypatch.setattr(query_route, "_do_writeback", fake_writeback)
+    monkeypatch.setattr(query_route, "get_settings", lambda: SimpleNamespace(memory_enabled=True))
+
+    client = TestClient(app)
+    with client.stream("POST", "/query/stream",
+                       json={"query": "q", "user_id": "u1"}) as resp:
+        assert resp.status_code == 200
+        assert "event: done" in "".join(resp.iter_text())
+    assert called == [("u1", "q", "答案", None)]

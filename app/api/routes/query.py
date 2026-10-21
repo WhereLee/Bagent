@@ -16,7 +16,7 @@ from app.generation.llm import get_llm
 from app.generation.streaming import stream_answer
 from app.ingestion.embedder import get_embedder
 from app.memory.writeback import run_writeback
-from app.observability.logging import get_logger
+from app.observability.logging import get_logger, log_event
 from app.observability.metrics import STAGE_LATENCY
 from app.tools import build_tools
 
@@ -78,12 +78,18 @@ def _stream_response(events, background: BackgroundTasks, user_id, query,
                      tenant: str | None) -> StreamingResponse:
     """把 stream_answer 的事件转成 SSE；done 前调度与 /query 相同的写回。"""
     def gen():
-        # HTTP 直方图对 SSE 只覆盖到首包；完整流时长单独用 sse_stream 计量
-        with STAGE_LATENCY.labels(stage="sse_stream").time():
-            for name, data in events:
-                if name == "done":
-                    _schedule_writeback(background, user_id, query, data.get("text", ""), tenant)
-                yield _sse(name, data)
+        try:
+            # HTTP 直方图对 SSE 只覆盖到首包；完整流时长单独用 sse_stream 计量
+            with STAGE_LATENCY.labels(stage="sse_stream").time():
+                for name, data in events:
+                    if name == "done":
+                        _schedule_writeback(background, user_id, query, data.get("text", ""), tenant)
+                    yield _sse(name, data)
+        except GeneratorExit:
+            # 客户端提前断开：没有 done 就没有写回；记一条日志便于排查
+            log_event(_log_api, "info", "sse_client_disconnected",
+                      user_id=user_id, query=query[:60])
+            raise
 
     return StreamingResponse(
         gen(), media_type="text/event-stream",

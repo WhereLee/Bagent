@@ -3,6 +3,11 @@ from __future__ import annotations
 
 from app.api.main import app
 from app.api.routes import health
+from app.observability.middleware import EXEMPT_PATHS
+
+
+def test_ready_is_exempt_from_auth_and_rate_limit():
+    assert "/ready" in EXEMPT_PATHS
 
 
 def test_known_routes_registered():
