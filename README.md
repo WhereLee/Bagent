@@ -19,7 +19,7 @@
 | 记忆写回安全 | 三臂 A/B：库内无真相时 naive 污染率 **68.3%±11.7** → trust 门控 **0%**（转安全拒答）；并如实标出"两源合谋促升可绕过门控（73.3%）"为已知边界 | `scripts/eval_writeback_contamination.py` |
 | 落地成本 | 重排模型导出 ONNX int8：磁盘 **1.11GB→279MB**，MRR 与 fp32 持平（差值在 95%CI 内） | `scripts/export_reranker_onnx.py` |
 | 吞吐与瓶颈定位 | 重排候选 20→5：平均时延 **26.1s→4.2s**、吞吐 **0.29→1.58 req/s**；靠 `/metrics` 阶段计时把瓶颈定在 CPU 上的 rerank（比其余环节慢约 180×） | `locustfile.py` + `app/observability/` |
-| 多租户强制 | HMAC 签名租户令牌 fail-closed + 入库盖章 + **dense / BM25 / 缓存三路一致过滤**，跨租户读写与删除均有回归用例钉住 | `tests/test_tenant*.py` |
+| 多租户强制 | HMAC 签名租户令牌 fail-closed + 入库盖章 + **dense / BM25 / 缓存 / agent 工具一致过滤**，跨租户读写与删除均有回归用例钉住 | `tests/test_tenant*.py` |
 | 对抗测试 | 注入对抗用例集用真实 payload 验防护拦得住（并因此补上了 `new instructions:` 漏网模式） | `tests/test_injection_adversarial.py` |
 | 测试与 CI | 220 个测试函数（204 个 hermetic 单测 + 16 个跑真 pgvector 的集成用例），单测不联网、不依赖模型；CI 四 job：单测 / 集成 / 密钥扫描 / 镜像构建 | `.github/workflows/ci.yml` |
 
