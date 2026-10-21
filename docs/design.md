@@ -139,7 +139,7 @@ M2/M3 会用 **golden set 上的 recall@k 消融实验**比较不同 chunk_size/
 
 **自适应早退**：dense 首分超阈跳过 rerank（默认关，避免伤召回）。
 
-**安全**：API-Key 中间件（恒定时间比较，/health /metrics 豁免）；prompt 注入对输入与检索文档做检测/中和（纵深防御一层，明确不是银弹）；租户过滤以参数化 SQL/后过滤实现（metadata.tenant，入库写入）。
+**安全**：API-Key 中间件（恒定时间比较，/health /metrics 豁免）；prompt 注入对输入与检索文档做检测/中和（纵深防御一层，明确不是银弹）。
 
 ## 14. M8：Self-RAG 与知识冲突
 
@@ -180,13 +180,8 @@ Reranker 增 OnnxReranker 后端（同 .rerank 接口，喂 input_ids/attention_
 会话态 session.py：进程内活文档 dict + 锁；/research/{id}/refine 重做某节回填引用。持久化 DB 属后续。
 交付物 schema(doc.py)：ResearchDoc{topic/outline/sections/claims/references/conflicts} + to_markdown。联网结果作为 draft 源进入，由 M9b 的 trust 生命周期管住是否可作答复。
 
-## 20. ⑥ 多租户数据面强制
-按"管理面(Java)/数据面(Python)"拆分，本仓只做数据面强制（不可外包网关：dense/BM25/缓存需原子一致过滤，网关看不到块级归属）。
-- 信任根 app/tenant.py：HMAC 签名租户令牌 	enant|sig，verify 失败/缺失 fail-closed(403)；不启用则不过滤（兼容单租户，默认）。端点经 X-Tenant header → resolve_tenant。
-- 入库盖章：index_document 把 tenant 写进 document/chunk 的 metadata JSONB（不改表结构）。
-- 三路一致：vector_search(d.metadata->>'tenant')、BM25(内存索引存 tenant 列表+search 过滤)、缓存 key 含 tenant。delete_document 带 tenant 只能删本租户。
-- 记忆：memories.tenant_id 列(幂等 ALTER)；add/search/find_similar/list 全按 tenant 分域去重与过滤。
-测试：146 单测(含 TestClient fail-closed 403) + 9 集成(跨租户 dense/hybrid 不召回对方、跨租户删除拒绝)。默认 TENANT_ENFORCEMENT_ENABLED=false 不改现有行为。
+## 20. 多租户（已移除）
+2026-10-21 按用户决定移除多租户数据面：删除 `app/tenant.py`、`X-Tenant` 鉴权，以及 dense/BM25/缓存/记忆/研究链路中的 tenant 参数与过滤。当前为单租户部署；旧库 `memories.tenant_id` 列保留但不写入/过滤，数据可清空后重灌。详见本次重构提交。
 
 ## 21. P0 写回记忆抗污染 A/B（含自曝边界）
 先重审原计划、补回被简化的降级：三臂(A0记忆关/A1 naive/A2门控)+合谋泄漏臂(A2b)、四类判定(把"同时给对错值"识别为主动暴露冲突而非污染)、双场景(conflict / kb_silent)、n 提到~100程序化生成+每探针重复压 LLM 抖动、隔离库 bagent_exp。
@@ -217,7 +212,7 @@ app/evaluation/trajectory.py：收敛率(status=final)/非法动作率/平均步
 events 表(name/type/tags/summary/created_by) + memories.event_id 关联。store.create_event / get_event / list_memories(event_id) / event_playbook(event_id)→{event, playbook[], facts[]}。publish 接受 event_id（可按 event_name 自动建）。API：POST /events、GET /events/{id}/playbook、/research/{sid}/publish 带事件归属。把"一次对话/活动"归成整份可检索可引用的经验档案，补上"复盘整体归档"这块。测试 12 集成含事件档案。
 
 ## 28. P3-C 结果回标（经验靠成败治理）
-memories.use_success/use_fail 计数 + lifecycle.outcome_action(纯)：成功→促升一级(draft→verified→curated)；失败累计达阈值(默认2)→作废(invalid_at)。store.record_feedback(id,ok,tenant 校验) + API POST /memory/feedback。补上 P0 暴露的"多源一致≠真相"缺口——来源数之外再加"用过成没成"这个更硬的信号。测试：outcome_action 单测 + record_feedback 集成(促升/达阈值作废)。
+memories.use_success/use_fail 计数 + lifecycle.outcome_action(纯)：成功→促升一级(draft→verified→curated)；失败累计达阈值(默认2)→作废(invalid_at)。store.record_feedback(id,ok) + API POST /memory/feedback。补上 P0 暴露的"多源一致≠真相"缺口——来源数之外再加"用过成没成"这个更硬的信号。测试：outcome_action 单测 + record_feedback 集成(促升/达阈值作废)。
 注：集成测试数据须按 owner 后缀唯一化，否则 add_memory 内容哈希去重会撞上一轮 commit 残留(rollback 撤不掉已提交行)。
 
 ## 29. M13 成本降级 / Redis 外部化 / SLO / 评测上量

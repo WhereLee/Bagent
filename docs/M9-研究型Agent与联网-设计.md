@@ -1,6 +1,6 @@
 # M9 设计：研究型 Agent + 联网（SearXNG/百度）+ 写回记忆
 
-> 本文是 2026-10-03 讨论的决策记录，作为实现依据。多租户/权限(②)明确**放最后**。
+> 本文是 2026-10-03 讨论的决策记录，作为实现依据。
 
 ## 1. 产品定位（不是一次性问答，是"研究型 Agent"）
 用户给一个主题/问题，系统产出一份**带引用、带时效、标注冲突的文档**；过程可讨论迭代；
@@ -49,4 +49,3 @@ self-RAG 判定需联网 → SearxNGProvider.search(q, engines=baidu, format=jso
 - **M9a（本阶段）**：`SearchProvider` 抽象 + `SearxNGProvider` + trafilatura 全文/时效 + SSRF/注入清洗 + mock provider + hermitic 测试 + searxng docker-compose/runbook。跑通链路，实网验证留到能起 SearXNG 的机器上。
 - **M9b**：记忆双库数据模型 + 异步写回管道 + trust 生命周期 + 检索按 trust 过滤。
 - **M9c**：会话态 + 活文档对象 + plan→分节→合成的编排（用 M9a 的 web 源当证据之一）。
-- **多租户(②)**：最后做（数据面强制在 M9b 的 user-scope 上顺势落地）。
