@@ -8,6 +8,7 @@ from sqlalchemy import delete, update
 
 from app.agent.react import resume_run, start_run
 from app.agent.state import PostgresRunStore, new_run
+from app.agent.worker import recover_once
 from app.db.models import AgentRun as AgentRunRow
 from app.db.models import AgentStep as AgentStepRow
 from app.db.session import get_session, init_schema
@@ -87,6 +88,32 @@ def test_agent_lease_roundtrip_against_real_db():
             session.close()
         assert run.id in [r.id for r in store.list_recoverable(limit=5)]
         assert store.acquire_lease(run.id, "worker-b", 30) is True
+    finally:
+        _cleanup(run.id)
+
+
+def test_recover_expired_run_against_real_db():
+    init_schema()
+    store = PostgresRunStore()
+    run = store.create(new_run("recover"))
+    try:
+        session = get_session()
+        try:
+            session.execute(
+                update(AgentRunRow).where(AgentRunRow.id == run.id).values(
+                    lease_owner="dead",
+                    lease_until=datetime.now(timezone.utc) - timedelta(seconds=1),
+                )
+            )
+            session.commit()
+        finally:
+            session.close()
+        recovered = recover_once(
+            store=store, llm_factory=lambda: ScriptedLLM(['{"final":"ok"}']),
+            tools_factory=lambda **kwargs: {},
+        )
+        assert run.id in recovered
+        assert store.get(run.id).status == "completed"
     finally:
         _cleanup(run.id)
 
