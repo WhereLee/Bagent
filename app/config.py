@@ -141,6 +141,8 @@ class Settings(BaseSettings):
     jwt_alg: str = "HS256"
     jwt_issuer: str = ""
     jwt_audience: str = ""
+    oidc_jwks_url: str = ""
+    oidc_issuer: str = ""
 
     # --- Security (M6) ---
     api_key: str = ""                 # 非空则启用 /query /search 等鉴权

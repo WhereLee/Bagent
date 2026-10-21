@@ -5,7 +5,9 @@
 """
 from __future__ import annotations
 
+import os
 import time
+from pathlib import Path
 from typing import Callable
 
 from app.agent.react import continue_run
@@ -14,6 +16,7 @@ from app.config import get_settings
 from app.db.session import init_schema
 from app.generation.llm import get_llm
 from app.observability.logging import get_logger, log_event
+from app.observability.metrics import AGENT_RECOVERY_TOTAL, AGENT_WORKER_LAST_SCAN
 from app.tools import DEFAULT_REQUIRES_APPROVAL, TOOL_SPECS, build_tools
 
 _log = get_logger("agent.worker")
@@ -30,6 +33,7 @@ def recover_once(
     settings = get_settings()
     store = store if store is not None else PostgresRunStore()
     recovered: list[str] = []
+    AGENT_WORKER_LAST_SCAN.set(time.time())
     for run in store.list_recoverable(limit=limit or settings.agent_recovery_limit):
         try:
             tools = tools_factory(user_id=run.user_id, scopes=run.scopes)
@@ -42,9 +46,13 @@ def recover_once(
             )
             if result is not None and is_terminal(result.status):
                 recovered.append(run.id)
+                AGENT_RECOVERY_TOTAL.labels(status="success").inc()
                 log_event(_log, "info", "agent_recovered", run_id=run.id,
                           status=result.status, attempt=result.attempt)
+            else:
+                AGENT_RECOVERY_TOTAL.labels(status="skipped").inc()
         except Exception as e:  # noqa: BLE001
+            AGENT_RECOVERY_TOTAL.labels(status="failed").inc()
             log_event(_log, "error", "agent_recovery_failed", run_id=run.id,
                       err=str(e)[:200])
             current = store.get(run.id)
@@ -55,14 +63,20 @@ def recover_once(
     return recovered
 
 
-def run_forever(*, once: bool = False) -> None:
+def run_forever(*, once: bool = False, poll_s: float | None = None) -> None:
     settings = get_settings()
+    poll_s = poll_s if poll_s is not None else settings.agent_worker_poll_s
     init_schema()
     if once:
         recover_once()
         return
     log_event(_log, "info", "agent_worker_started",
               poll_s=settings.agent_worker_poll_s)
+    heartbeat = Path(os.getenv("AGENT_WORKER_HEARTBEAT_FILE", "/tmp/bagent-worker-heartbeat"))
     while True:
         recover_once()
-        time.sleep(settings.agent_worker_poll_s)
+        try:
+            heartbeat.write_text(str(time.time()), encoding="utf-8")
+        except OSError:
+            pass
+        time.sleep(poll_s)

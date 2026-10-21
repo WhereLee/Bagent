@@ -117,6 +117,26 @@ class AgentRun(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ToolOperation(Base):
+    """P3：副作用工具操作账本（幂等键 + 未知态对账）。"""
+    __tablename__ = "tool_operations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    operation_id: Mapped[str] = mapped_column(Text)
+    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"))
+    step_index: Mapped[int] = mapped_column(Integer)
+    tool: Mapped[str] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(Text, unique=True)
+    args_hash: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String, default="started")
+    external_ref: Mapped[str | None] = mapped_column(Text)
+    result: Mapped[dict | None] = mapped_column(JSONB)
+    error: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AgentStep(Base):
     """P0 Agent 运行时：逐步骤轨迹（工具/参数/观察/延迟/token）。"""
     __tablename__ = "agent_steps"
@@ -128,6 +148,7 @@ class AgentStep(Base):
     action: Mapped[str] = mapped_column(Text)
     args: Mapped[dict] = mapped_column(JSONB, default=dict)
     observation: Mapped[str | None] = mapped_column(Text)
+    observation_full: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     token_input: Mapped[int] = mapped_column(Integer, default=0)

@@ -11,3 +11,4 @@ def test_workbench_page_served():
     assert "Bagent Agent Workbench" in res.text
     assert "/agent/runs/stream" in res.text
     assert "/agent/runs/" in res.text and "/events" in res.text
+    assert "最近运行" in res.text and "loadHistory" in res.text

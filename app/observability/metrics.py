@@ -112,6 +112,15 @@ AGENT_TOOL_RETRIES = Counter(
 MCP_GATEWAY_CALLS = Counter(
     "bagent_mcp_gateway_calls_total", "MCP gateway 工具调用", ["server", "tool", "status"]
 )
+AGENT_RECOVERY_TOTAL = Counter(
+    "bagent_agent_recovery_total", "Agent 崩溃恢复结果", ["status"]
+)
+AGENT_WORKER_LAST_SCAN = Gauge(
+    "bagent_agent_worker_last_scan_timestamp_seconds", "Agent worker 最近扫描时间"
+)
+AGENT_OPERATIONS_TOTAL = Counter(
+    "bagent_agent_operations_total", "Agent 副作用操作账本事件", ["state"]
+)
 
 
 def render_metrics() -> tuple[bytes, str]:

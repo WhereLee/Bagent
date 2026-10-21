@@ -53,10 +53,16 @@ services:
       PG_DATABASE: bagent_rag
       HF_HOME: /app/models
       HF_HUB_OFFLINE: "1"
+      AGENT_WORKER_HEARTBEAT_FILE: /tmp/bagent-worker-heartbeat
     command: ["python", "scripts/agent_worker.py"]
     volumes:
       - ./models:/app/models
       - ./data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/bagent-worker-heartbeat"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
 volumes:

@@ -24,6 +24,7 @@ from app.agent.events import EventSink, emit_event, status_event_type, use_event
 from app.agent.finalize import finalize_agent_answer
 from app.agent.state import (
     TERMINAL_STATUSES,
+    ToolOperation,
     AgentRun,
     AgentStep,
     InMemoryRunStore,
@@ -42,6 +43,7 @@ from app.observability.metrics import (
     AGENT_STEP_LATENCY,
     AGENT_STEPS_TOTAL,
     AGENT_TOOL_RETRIES,
+    AGENT_OPERATIONS_TOTAL,
 )
 from app.observability.tracing import trace_span
 from app.observability.usage import collect_usage
@@ -560,6 +562,43 @@ def _execute_tool(
                           token_output=token_output)
         return
 
+    op_key = None
+    if spec is not None and spec.side_effect:
+        args_hash = hashlib.sha256(_canonical_args(args).encode("utf-8")).hexdigest()[:32]
+        op_key = f"{run.id}:{step_index}:{tool}:{args_hash[:16]}"
+        try:
+            op = store.begin_operation(ToolOperation(
+                operation_id=uuid.uuid4().hex, run_id=run.id, step_index=step_index,
+                tool=tool, idempotency_key=op_key, args_hash=args_hash,
+            ))
+        except Exception as e:  # noqa: BLE001
+            _append_operation_error(store, run, tool=tool, args=args, thought=thought,
+                                    step_index=step_index, error_type="unavailable",
+                                    message=f"操作账本不可用: {e}",
+                                    token_input=token_input, token_output=token_output)
+            return
+        if not op.is_new:
+            if op.state == "succeeded":
+                AGENT_OPERATIONS_TOTAL.labels(state="replayed").inc()
+                observation_full = json.dumps(op.result or {}, ensure_ascii=False, default=str)
+                observation = observation_full[:1500]
+                _append_step(store, run, AgentStep(
+                    run_id=run.id, step_index=step_index, thought=thought,
+                    action=tool, args=args, observation=observation,
+                    observation_full=observation_full, latency_ms=0, token_input=token_input, token_output=token_output,
+                ))
+                return
+            if op.state in ("started", "unknown"):
+                AGENT_OPERATIONS_TOTAL.labels(state="unknown").inc()
+                _append_operation_error(
+                    store, run, tool=tool, args=args, thought=thought,
+                    step_index=step_index, error_type="unknown_outcome",
+                    message="该副作用操作已有未完成记录，禁止自动重试",
+                    hint="先查询外部状态或人工接管",
+                    token_input=token_input, token_output=token_output,
+                )
+                return
+
     call_args = dict(args)
     if spec is not None and spec.side_effect and spec.idempotent and spec.idempotency_key_field:
         field = spec.idempotency_key_field
@@ -582,13 +621,21 @@ def _execute_tool(
         for attempt in range(attempts):
             try:
                 obs = _invoke_tool(tool, tools[tool], call_args, timeout_s)
-                observation = json.dumps(obs, ensure_ascii=False, default=str)[:1500]
+                observation_full = json.dumps(obs, ensure_ascii=False, default=str)
+                observation = observation_full[:1500]
                 latency_ms = int((time.perf_counter() - started) * 1000)
+                if op_key is not None:
+                    result = obs if isinstance(obs, dict) else {"value": obs}
+                    try:
+                        store.mark_operation(op_key, "succeeded", result=result)
+                        AGENT_OPERATIONS_TOTAL.labels(state="succeeded").inc()
+                    except Exception:  # noqa: BLE001
+                        pass
                 span.set_attribute("bagent.tool.status", "ok")
                 _append_step(store, run, AgentStep(
                     run_id=run.id, step_index=step_index, thought=thought,
                     action=tool, args=args, observation=observation,
-                    latency_ms=latency_ms,
+                    observation_full=observation_full, latency_ms=latency_ms,
                     token_input=token_input, token_output=token_output,
                 ))
                 return
@@ -607,16 +654,26 @@ def _execute_tool(
                     time.sleep(get_settings().llm_retry_base_delay * (2 ** attempt)
                                + random.uniform(0, 0.2))
                     continue
+                if op_key is not None:
+                    op_state = ("unknown" if spec is not None and spec.side_effect
+                                else "failed")
+                    try:
+                        store.mark_operation(op_key, op_state, error=str(err)[:300])
+                        AGENT_OPERATIONS_TOTAL.labels(state=op_state).inc()
+                    except Exception:  # noqa: BLE001
+                        pass
                 payload = {"error_type": err.error_type, "message": str(err)[:300],
                            "retryable": err.retryable, "hint": err.hint,
                            "details": err.details}
-                observation = json.dumps(payload, ensure_ascii=False, default=str)[:1500]
+                observation_full = json.dumps(payload, ensure_ascii=False, default=str)
+                observation = observation_full[:1500]
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 span.set_attribute("bagent.tool.status", err.error_type)
                 _append_step(store, run, AgentStep(
                     run_id=run.id, step_index=step_index, thought=thought,
                     action=f"{err.error_type}:{tool}", args=args,
-                    observation=observation, error=err.error_type,
+                    observation=observation, observation_full=observation_full,
+                    error=err.error_type,
                     latency_ms=latency_ms,
                     token_input=token_input, token_output=token_output,
                 ))
@@ -672,6 +729,24 @@ def _scope_allowed(spec: ToolSpec | None, scopes: set[str] | frozenset[str] | No
     if scopes is None or spec is None or spec.required_scope is None:
         return True
     return "*" in scopes or spec.required_scope in scopes
+
+
+def _append_operation_error(
+    store: RunStore, run: AgentRun, *, tool: str, args: dict, thought: str | None,
+    step_index: int, error_type: str, message: str, hint: str = "",
+    token_input: int, token_output: int,
+) -> None:
+    observation_full = json.dumps({
+        "error_type": error_type, "message": message,
+        "retryable": False, "hint": hint,
+    }, ensure_ascii=False)
+    observation = observation_full[:1500]
+    _append_step(store, run, AgentStep(
+        run_id=run.id, step_index=step_index, thought=thought,
+        action=f"{error_type}:{tool}", args=args, observation=observation,
+        observation_full=observation_full, error=error_type, latency_ms=0,
+        token_input=token_input, token_output=token_output,
+    ))
 
 
 def _append_forbidden(

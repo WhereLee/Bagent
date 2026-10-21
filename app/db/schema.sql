@@ -105,6 +105,26 @@ ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ;
 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS attempt INT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_agent_runs_recoverable ON agent_runs(status, lease_until);
 
+-- P3 副作用工具操作账本：稳定幂等键 + 未知态对账
+CREATE TABLE IF NOT EXISTS tool_operations (
+    id              BIGSERIAL PRIMARY KEY,
+    operation_id    TEXT NOT NULL,
+    run_id          TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    step_index      INT NOT NULL,
+    tool            TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    args_hash       TEXT NOT NULL,
+    state           TEXT NOT NULL DEFAULT 'started', -- started/succeeded/failed/unknown
+    external_ref    TEXT,
+    result          JSONB,
+    error           TEXT,
+    attempts        INT NOT NULL DEFAULT 1,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tool_operations_run ON tool_operations(run_id, step_index);
+CREATE INDEX IF NOT EXISTS idx_tool_operations_state ON tool_operations(state, updated_at);
+
 -- P0 Agent 运行时：逐步骤轨迹（工具/参数/观察/延迟/token）
 CREATE TABLE IF NOT EXISTS agent_steps (
     id           BIGSERIAL PRIMARY KEY,
@@ -114,6 +134,7 @@ CREATE TABLE IF NOT EXISTS agent_steps (
     action       TEXT NOT NULL,
     args         JSONB NOT NULL DEFAULT '{}'::jsonb,
     observation  TEXT,
+    observation_full TEXT,
     error        TEXT,
     latency_ms   INT,
     token_input  INT NOT NULL DEFAULT 0,
@@ -121,6 +142,7 @@ CREATE TABLE IF NOT EXISTS agent_steps (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE(run_id, step_index)
 );
+ALTER TABLE agent_steps ADD COLUMN IF NOT EXISTS observation_full TEXT;
 CREATE INDEX IF NOT EXISTS idx_agent_steps_run ON agent_steps(run_id, step_index);
 
 -- P3-B 事件/复盘实体：把一次活动的方案/决策/踩坑归成整份可检索可引用的经验档案

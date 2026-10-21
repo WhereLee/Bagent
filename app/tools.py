@@ -59,6 +59,7 @@ class ToolSpec:
     requires_approval: bool = False
     required_scope: str | None = None
     idempotency_key_field: str | None = None
+    reconcile_tool: str | None = None
     # P1 执行层：未显式设置时按工具类型解析；不写死业务阈值。
     timeout_s: float | None = None
     max_calls: int | None = None

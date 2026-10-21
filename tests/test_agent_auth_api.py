@@ -38,6 +38,7 @@ def _install(monkeypatch, store, llms, tools, seen):
     monkeypatch.setattr(auth, "get_settings", lambda: SimpleNamespace(
         auth_enabled=True, jwt_secret=SECRET, jwt_alg="HS256",
         jwt_issuer="issuer", jwt_audience="audience",
+        oidc_jwks_url="", oidc_issuer="",
     ))
     monkeypatch.setattr(agent_route, "get_settings",
                         lambda: SimpleNamespace(faithfulness_enabled=False))
@@ -68,6 +69,9 @@ def test_body_user_id_ignored_and_owner_enforced(monkeypatch):
     assert body["user_id"] == "u1"
     assert seen["user_id"] == "u1" and seen["scopes"] == frozenset({"agent:read"})
 
+    listing = client.get("/agent/runs", headers=h2)
+    assert listing.status_code == 200 and listing.json()["runs"] == []
+    assert client.get("/agent/runs", headers=h1).json()["runs"][0]["run_id"] == body["run_id"]
     assert client.get(f"/agent/runs/{body['run_id']}", headers=h2).status_code == 403
     assert client.get(f"/agent/runs/{body['run_id']}", headers=h1).status_code == 200
     assert client.get(f"/agent/runs/{body['run_id']}/events", headers=h2).status_code == 403

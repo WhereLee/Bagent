@@ -45,6 +45,8 @@ def test_known_routes_registered():
         "/mcp/tools", "/mcp/call", "/workbench",
         "/agent", "/agent/runs", "/agent/runs/stream",
         "/agent/runs/{run_id}", "/agent/runs/{run_id}/events",
+        "/agent/runs/{run_id}/operations",
+        "/agent/runs/{run_id}/steps/{step_index}",
         "/agent/runs/{run_id}/approve", "/agent/runs/{run_id}/reject",
         "/agent/runs/{run_id}/cancel",
     }

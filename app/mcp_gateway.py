@@ -10,6 +10,7 @@ mcp SDK 不装进主 web venv（见 requirements-mcp.txt）；MCPClient 内部�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from dataclasses import dataclass, field
@@ -42,6 +43,11 @@ class MCPRemoteTool:
     def ref(self) -> str:
         return f"{_PREFIX}{self.server}__{self.name}"
 
+    @property
+    def schema_hash(self) -> str:
+        raw = json.dumps(self.input_schema or {}, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
 
 class MCPClientProtocol(Protocol):
     def list_tools(self) -> list[MCPRemoteTool]: ...
@@ -62,11 +68,13 @@ def parse_ref(ref: str) -> tuple[str, str]:
 
 class MCPToolGateway:
     def __init__(self, client: MCPClientProtocol, *, allowlist: set[str] | None = None,
-                 scope: str = "agent:mcp", approval: bool = True) -> None:
+                 scope: str = "agent:mcp", approval: bool = True,
+                 schema_pins: dict[str, str] | None = None) -> None:
         self.client = client
         self.allowlist = set(allowlist) if allowlist is not None else None
         self.scope = scope
         self.approval = approval
+        self.schema_pins = dict(schema_pins or {})
         self._tools: dict[str, MCPRemoteTool] | None = None
 
     def _allowed(self, tool: MCPRemoteTool) -> bool:
@@ -75,7 +83,20 @@ class MCPToolGateway:
         return tool.ref in self.allowlist or f"{_PREFIX}{tool.server}__*" in self.allowlist
 
     def refresh(self) -> list[MCPRemoteTool]:
-        tools = [t for t in self.client.list_tools() if self._allowed(t)]
+        tools = []
+        for tool in self.client.list_tools():
+            if not self._allowed(tool):
+                continue
+            pin = self.schema_pins.get(tool.ref)
+            if pin is not None and pin != tool.schema_hash:
+                MCP_GATEWAY_CALLS.labels(server=tool.server, tool=tool.name,
+                                         status="schema_changed").inc()
+                log_event(_log, "error", "mcp_schema_changed", server=tool.server,
+                          tool=tool.name, expected=pin, actual=tool.schema_hash)
+                continue
+            if self.schema_pins and pin is None:
+                continue
+            tools.append(tool)
         self._tools = {t.ref: t for t in tools}
         return tools
 
@@ -95,7 +116,8 @@ class MCPToolGateway:
         try:
             result = self.client.call_tool(tool.server, tool.name, arguments)
             MCP_GATEWAY_CALLS.labels(server=tool.server, tool=tool.name, status="ok").inc()
-            log_event(_log, "info", "mcp_tool_called", server=tool.server, tool=tool.name)
+            log_event(_log, "info", "mcp_tool_called", server=tool.server,
+                      tool=tool.name, schema_hash=tool.schema_hash)
             return result
         except Exception:
             MCP_GATEWAY_CALLS.labels(server=tool.server, tool=tool.name, status="error").inc()
@@ -127,13 +149,15 @@ class MCPServerConfig:
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
     env: dict[str, str] = field(default_factory=dict)
+    token_env: str = ""
 
 
 class MCPClient:
     """最小 MCP client；每次 list/call 建短会话，避免跨请求持有连接。"""
 
-    def __init__(self, servers: list[MCPServerConfig]) -> None:
+    def __init__(self, servers: list[MCPServerConfig], timeout_s: float = 30.0) -> None:
         self.servers = servers
+        self.timeout_s = timeout_s
 
     def _server(self, name: str) -> MCPServerConfig:
         for server in self.servers:
@@ -146,8 +170,11 @@ class MCPClient:
         from mcp.client.stdio import stdio_client
 
         if config.transport == "stdio":
+            env = dict(config.env)
+            if config.token_env and os.getenv(config.token_env):
+                env[config.token_env] = os.getenv(config.token_env, "")
             params = StdioServerParameters(command=config.command, args=list(config.args),
-                                           env=config.env or None)
+                                           env=env or None)
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
@@ -155,14 +182,19 @@ class MCPClient:
         if config.transport == "streamable_http":
             from mcp.client.streamable_http import streamablehttp_client
 
-            async with streamablehttp_client(config.url, headers=config.headers) as (read, write, _):
+            headers = dict(config.headers)
+            if config.token_env and os.getenv(config.token_env):
+                headers["Authorization"] = f"Bearer {os.getenv(config.token_env)}"
+            async with streamablehttp_client(config.url, headers=headers) as (read, write, _):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     return await fn(session)
         raise ValueError(f"unsupported MCP transport: {config.transport}")
 
     def _run(self, coro):
-        return asyncio.run(coro)
+        async def bounded():
+            return await asyncio.wait_for(coro, timeout=self.timeout_s)
+        return asyncio.run(bounded())
 
     def list_tools(self) -> list[MCPRemoteTool]:
         result: list[MCPRemoteTool] = []
@@ -206,7 +238,13 @@ def gateway_from_env() -> MCPToolGateway | None:
             name=item["name"], transport=item.get("transport", "stdio"),
             command=item.get("command", ""), args=tuple(item.get("args", [])),
             url=item.get("url", ""), headers=item.get("headers", {}),
-            env=item.get("env", {}),
+            env=item.get("env", {}), token_env=item.get("token_env", ""),
         ))
     allow = {x.strip() for x in os.getenv("MCP_GATEWAY_ALLOWLIST", "").split(",") if x.strip()}
-    return MCPToolGateway(MCPClient(servers), allowlist=allow or None)
+    pins = {}
+    raw_pins = os.getenv("MCP_GATEWAY_SCHEMA_PINS", "").strip()
+    if raw_pins:
+        pins = json.loads(raw_pins)
+    timeout_s = float(os.getenv("MCP_GATEWAY_TIMEOUT_S", "30"))
+    return MCPToolGateway(MCPClient(servers, timeout_s=timeout_s),
+                          allowlist=allow or None, schema_pins=pins or None)

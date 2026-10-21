@@ -45,3 +45,4 @@ _wheels/
 
 # 含密钥的部署脚本（绝不上库；实际 .env 在服务器端）
 deploy/server_serve.sh
+.venv-mcp/

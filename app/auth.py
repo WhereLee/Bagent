@@ -12,6 +12,9 @@ from fastapi import Header, HTTPException
 
 from app.config import get_settings
 
+_jwk_client = None
+_jwk_url = ""
+
 
 @dataclass(frozen=True)
 class Principal:
@@ -33,12 +36,35 @@ def _scopes_of(payload: dict[str, Any]) -> frozenset[str]:
     return frozenset(v for v in values if v)
 
 
+def _decode(token: str, settings) -> dict:
+    import jwt
+
+    if settings.oidc_jwks_url:
+        global _jwk_client, _jwk_url
+        if _jwk_client is None or _jwk_url != settings.oidc_jwks_url:
+            _jwk_client = jwt.PyJWKClient(settings.oidc_jwks_url)
+            _jwk_url = settings.oidc_jwks_url
+        signing_key = _jwk_client.get_signing_key_from_jwt(token)
+        return jwt.decode(
+            token, signing_key.key, algorithms=["RS256", "ES256"],
+            audience=settings.jwt_audience or None,
+            issuer=settings.jwt_issuer or settings.oidc_issuer or None,
+            options={"require": ["exp", "sub"]},
+        )
+    return jwt.decode(
+        token, settings.jwt_secret, algorithms=[settings.jwt_alg],
+        audience=settings.jwt_audience or None,
+        issuer=settings.jwt_issuer or None,
+        options={"require": ["exp", "sub"]},
+    )
+
+
 def get_principal(authorization: str | None = Header(default=None)) -> Principal | None:
     """AUTH_ENABLED=false 返回 None；开启后无有效 Bearer 直接 401。"""
     settings = get_settings()
     if not settings.auth_enabled:
         return None
-    if not settings.jwt_secret:
+    if not settings.jwt_secret and not settings.oidc_jwks_url:
         raise HTTPException(status_code=500, detail="auth_not_configured")
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
@@ -47,16 +73,7 @@ def get_principal(authorization: str | None = Header(default=None)) -> Principal
         )
     token = authorization.split(" ", 1)[1].strip()
     try:
-        import jwt
-
-        payload = jwt.decode(
-            token,
-            settings.jwt_secret,
-            algorithms=[settings.jwt_alg],
-            audience=settings.jwt_audience or None,
-            issuer=settings.jwt_issuer or None,
-            options={"require": ["exp", "sub"]},
-        )
+        payload = _decode(token, settings)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(
             status_code=401, detail="invalid bearer token",

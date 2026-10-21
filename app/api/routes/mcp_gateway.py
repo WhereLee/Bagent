@@ -40,7 +40,7 @@ def mcp_tools(principal: Principal | None = Depends(get_principal)) -> dict:
     tools = get_gateway().list_tools()
     return {"tools": [
         {"name": t.ref, "description": t.description, "input_schema": t.input_schema,
-         "server": t.server}
+         "schema_hash": t.schema_hash, "server": t.server}
         for t in tools
     ]}
 

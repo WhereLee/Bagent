@@ -15,7 +15,8 @@ SECRET = "s" * 32
 
 def _settings(**kwargs):
     base = dict(auth_enabled=True, jwt_secret=SECRET, jwt_alg="HS256",
-                jwt_issuer="issuer", jwt_audience="audience")
+                jwt_issuer="issuer", jwt_audience="audience",
+                oidc_jwks_url="", oidc_issuer="")
     base.update(kwargs)
     return SimpleNamespace(**base)
 
@@ -54,6 +55,34 @@ def test_missing_and_invalid_token(monkeypatch):
     with pytest.raises(HTTPException) as invalid:
         auth.get_principal(authorization="Bearer nope")
     assert invalid.value.status_code == 401
+
+
+def test_oidc_jwks_rs256(monkeypatch):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from types import SimpleNamespace
+
+    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public = private.public_key()
+    token = jwt.encode({
+        "sub": "oidc-user", "iss": "issuer", "aud": "audience",
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+        "scope": "agent:read",
+    }, private, algorithm="RS256")
+    payload = serialization.load_pem_public_key(
+        public.public_bytes(serialization.Encoding.PEM,
+                            serialization.PublicFormat.SubjectPublicKeyInfo))
+
+    class FakeJWK:
+        def get_signing_key_from_jwt(self, token):
+            return SimpleNamespace(key=payload)
+
+    monkeypatch.setattr(auth, "_jwk_client", FakeJWK())
+    monkeypatch.setattr(auth, "_jwk_url", "https://idp.example/jwks")
+    monkeypatch.setattr(auth, "get_settings", lambda: _settings(
+        jwt_secret="", oidc_jwks_url="https://idp.example/jwks"))
+    principal = auth.get_principal(authorization=f"Bearer {token}")
+    assert principal.sub == "oidc-user" and principal.has_scope("agent:read")
 
 
 def test_expired_and_wrong_audience(monkeypatch):

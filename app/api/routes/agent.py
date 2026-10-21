@@ -5,7 +5,7 @@ import json
 from queue import Empty, Queue
 from threading import Thread
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.agent.events import events_from_run, replay_after
@@ -15,6 +15,7 @@ from app.agent.state import (
     PostgresRunStore,
     RunStore,
     new_run,
+    operation_to_dict,
     run_to_dict,
     step_to_dict,
 )
@@ -118,6 +119,16 @@ def _sse_frame(event: dict) -> str:
             f"data: {json.dumps(event, ensure_ascii=False)}\n\n")
 
 
+@router.get("/agent/runs")
+def agent_runs(limit: int = Query(20, ge=1, le=100),
+               status: str | None = Query(None),
+               principal: Principal | None = Depends(get_principal)) -> dict:
+    store = get_run_store()
+    user_id = principal.sub if principal is not None else None
+    runs = store.list_runs(user_id=user_id, limit=limit, status=status)
+    return {"runs": [_serialize(r, store) for r in runs]}
+
+
 @router.post("/agent/runs/stream")
 def agent_run_stream(req: AgentRunReq, principal: Principal | None = Depends(get_principal)):
     """创建并流式运行；断开连接不取消 run，之后可用 events 端点重放。"""
@@ -179,6 +190,35 @@ def agent_run_stream(req: AgentRunReq, principal: Principal | None = Depends(get
             "X-Run-ID": run.id, "X-Approval-Token": run.approval_token,
         },
     )
+
+
+@router.get("/agent/runs/{run_id}/steps/{step_index}")
+def agent_step_detail(run_id: str, step_index: int,
+                      principal: Principal | None = Depends(get_principal)) -> dict:
+    store = get_run_store()
+    run = store.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    _check_owner(run, principal)
+    for step in store.list_steps(run.id):
+        if step.step_index == step_index:
+            payload = step_to_dict(step)
+            payload["observation_full"] = step.observation_full
+            return payload
+    raise HTTPException(status_code=404, detail="step not found")
+
+
+@router.get("/agent/runs/{run_id}/operations")
+def agent_operations(run_id: str,
+                     principal: Principal | None = Depends(get_principal)) -> dict:
+    store = get_run_store()
+    run = store.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    _check_owner(run, principal)
+    return {"run_id": run.id, "operations": [
+        operation_to_dict(op) for op in store.list_operations(run.id)
+    ]}
 
 
 @router.get("/agent/runs/{run_id}/events")

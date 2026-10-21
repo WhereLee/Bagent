@@ -14,9 +14,11 @@ from enum import Enum
 from typing import Protocol
 
 from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.db.models import AgentRun as AgentRunRow
 from app.db.models import AgentStep as AgentStepRow
+from app.db.models import ToolOperation as ToolOperationRow
 from app.db.session import get_session
 
 
@@ -88,12 +90,32 @@ class AgentStep:
     thought: str | None = None
     args: dict = field(default_factory=dict)
     observation: str | None = None
+    observation_full: str | None = None
     error: str | None = None
     latency_ms: int | None = None
     token_input: int = 0
     token_output: int = 0
     id: int | None = None
     created_at: datetime | None = None
+
+
+@dataclass
+class ToolOperation:
+    operation_id: str
+    run_id: str
+    step_index: int
+    tool: str
+    idempotency_key: str
+    args_hash: str
+    state: str = "started"
+    external_ref: str | None = None
+    result: dict | None = None
+    error: str | None = None
+    attempts: int = 1
+    id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    is_new: bool = False
 
 
 class RunStore(Protocol):
@@ -106,6 +128,13 @@ class RunStore(Protocol):
     def renew_lease(self, run_id: str, owner: str, ttl_s: float) -> bool: ...
     def release_lease(self, run_id: str, owner: str) -> None: ...
     def list_recoverable(self, *, limit: int = 10) -> list[AgentRun]: ...
+    def begin_operation(self, op: ToolOperation) -> ToolOperation: ...
+    def mark_operation(self, key: str, state: str, *, result: dict | None = None,
+                       error: str | None = None, external_ref: str | None = None) -> None: ...
+    def get_operation(self, key: str) -> ToolOperation | None: ...
+    def list_operations(self, run_id: str) -> list[ToolOperation]: ...
+    def list_runs(self, *, user_id: str | None = None, limit: int = 20,
+                  status: str | None = None) -> list[AgentRun]: ...
 
 
 class InMemoryRunStore:
@@ -114,6 +143,7 @@ class InMemoryRunStore:
     def __init__(self) -> None:
         self._runs: dict[str, AgentRun] = {}
         self._steps: dict[str, list[AgentStep]] = {}
+        self._ops: dict[str, ToolOperation] = {}
 
     def create(self, run: AgentRun) -> AgentRun:
         if run.id in self._runs:
@@ -174,9 +204,54 @@ class InMemoryRunStore:
         rows.sort(key=lambda r: r.updated_at or r.created_at or now)
         return rows[:limit]
 
+    def begin_operation(self, op: ToolOperation) -> ToolOperation:
+        existing = self._ops.get(op.idempotency_key)
+        if existing is not None:
+            if existing.state == "failed":
+                existing.state = "started"
+                existing.attempts += 1
+                existing.updated_at = datetime.now(timezone.utc)
+                existing.is_new = True
+                return existing
+            existing.is_new = False
+            return existing
+        op.created_at = datetime.now(timezone.utc)
+        op.updated_at = op.created_at
+        op.is_new = True
+        self._ops[op.idempotency_key] = op
+        return op
+
+    def mark_operation(self, key: str, state: str, *, result: dict | None = None,
+                       error: str | None = None, external_ref: str | None = None) -> None:
+        op = self._ops.get(key)
+        if op is None:
+            raise KeyError(f"operation not found: {key}")
+        op.state = state
+        op.result = result if result is not None else op.result
+        op.error = error
+        op.external_ref = external_ref if external_ref is not None else op.external_ref
+        op.updated_at = datetime.now(timezone.utc)
+
+    def get_operation(self, key: str) -> ToolOperation | None:
+        return self._ops.get(key)
+
+    def list_operations(self, run_id: str) -> list[ToolOperation]:
+        return sorted((o for o in self._ops.values() if o.run_id == run_id),
+                      key=lambda o: (o.step_index, o.id or 0))
+
+    def list_runs(self, *, user_id: str | None = None, limit: int = 20,
+                  status: str | None = None) -> list[AgentRun]:
+        rows = [r for r in self._runs.values()
+                if (user_id is None or r.user_id == user_id)
+                and (status is None or r.status == status)]
+        rows.sort(key=lambda r: r.updated_at or r.created_at or datetime.min.replace(tzinfo=timezone.utc),
+                  reverse=True)
+        return rows[:limit]
+
     def clear(self) -> None:
         self._runs.clear()
         self._steps.clear()
+        self._ops.clear()
 
 
 class PostgresRunStore:
@@ -199,7 +274,8 @@ class PostgresRunStore:
         return AgentStep(
             id=row.id, run_id=row.run_id, step_index=row.step_index, thought=row.thought,
             action=row.action, args=row.args or {}, observation=row.observation,
-            error=row.error, latency_ms=row.latency_ms, token_input=row.token_input,
+            observation_full=row.observation_full, error=row.error,
+            latency_ms=row.latency_ms, token_input=row.token_input,
             token_output=row.token_output, created_at=row.created_at,
         )
 
@@ -252,7 +328,8 @@ class PostgresRunStore:
             row = AgentStepRow(
                 run_id=step.run_id, step_index=step.step_index, thought=step.thought,
                 action=step.action, args=step.args or {}, observation=step.observation,
-                error=step.error, latency_ms=step.latency_ms,
+                observation_full=step.observation_full, error=step.error,
+                latency_ms=step.latency_ms,
                 token_input=step.token_input, token_output=step.token_output,
             )
             session.add(row)
@@ -336,6 +413,114 @@ class PostgresRunStore:
             session.close()
 
 
+    @staticmethod
+    def _to_operation(row: ToolOperationRow) -> ToolOperation:
+        return ToolOperation(
+            id=row.id, operation_id=row.operation_id, run_id=row.run_id,
+            step_index=row.step_index, tool=row.tool,
+            idempotency_key=row.idempotency_key, args_hash=row.args_hash,
+            state=row.state, external_ref=row.external_ref, result=row.result,
+            error=row.error, attempts=row.attempts,
+            created_at=row.created_at, updated_at=row.updated_at,
+        )
+
+    def begin_operation(self, op: ToolOperation) -> ToolOperation:
+        session = get_session()
+        try:
+            existing = session.scalar(
+                select(ToolOperationRow).where(
+                    ToolOperationRow.idempotency_key == op.idempotency_key)
+            )
+            if existing is not None:
+                if existing.state == "failed":
+                    existing.state = "started"
+                    existing.attempts = (existing.attempts or 1) + 1
+                    existing.updated_at = datetime.now(timezone.utc)
+                    session.commit()
+                    out = self._to_operation(existing)
+                    out.is_new = True
+                    return out
+                return self._to_operation(existing)
+            row = ToolOperationRow(
+                operation_id=op.operation_id, run_id=op.run_id,
+                step_index=op.step_index, tool=op.tool,
+                idempotency_key=op.idempotency_key, args_hash=op.args_hash,
+                state=op.state, attempts=op.attempts,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            out = self._to_operation(row)
+            out.is_new = True
+            return out
+        except IntegrityError:
+            session.rollback()
+            row = session.scalar(
+                select(ToolOperationRow).where(
+                    ToolOperationRow.idempotency_key == op.idempotency_key)
+            )
+            if row is None:
+                raise
+            return self._to_operation(row)
+        finally:
+            session.close()
+
+    def mark_operation(self, key: str, state: str, *, result: dict | None = None,
+                       error: str | None = None, external_ref: str | None = None) -> None:
+        session = get_session()
+        try:
+            row = session.scalar(
+                select(ToolOperationRow).where(ToolOperationRow.idempotency_key == key)
+            )
+            if row is None:
+                raise KeyError(f"operation not found: {key}")
+            row.state = state
+            if result is not None:
+                row.result = result
+            row.error = error
+            if external_ref is not None:
+                row.external_ref = external_ref
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+        finally:
+            session.close()
+
+    def get_operation(self, key: str) -> ToolOperation | None:
+        session = get_session()
+        try:
+            row = session.scalar(
+                select(ToolOperationRow).where(ToolOperationRow.idempotency_key == key)
+            )
+            return self._to_operation(row) if row is not None else None
+        finally:
+            session.close()
+
+    def list_runs(self, *, user_id: str | None = None, limit: int = 20,
+                  status: str | None = None) -> list[AgentRun]:
+        session = get_session()
+        try:
+            q = select(AgentRunRow)
+            if user_id is not None:
+                q = q.where(AgentRunRow.user_id == user_id)
+            if status is not None:
+                q = q.where(AgentRunRow.status == status)
+            rows = session.scalars(q.order_by(AgentRunRow.updated_at.desc()).limit(limit)).all()
+            return [self._to_run(r) for r in rows]
+        finally:
+            session.close()
+
+    def list_operations(self, run_id: str) -> list[ToolOperation]:
+        session = get_session()
+        try:
+            rows = session.scalars(
+                select(ToolOperationRow).where(ToolOperationRow.run_id == run_id)
+                .order_by(ToolOperationRow.step_index, ToolOperationRow.id)
+            ).all()
+            return [self._to_operation(r) for r in rows]
+        finally:
+            session.close()
+
+
 def run_to_dict(run: AgentRun, *, include_token: bool = False) -> dict:
     payload = {
         "run_id": run.id,
@@ -360,6 +545,18 @@ def run_to_dict(run: AgentRun, *, include_token: bool = False) -> dict:
     return payload
 
 
+def operation_to_dict(op: ToolOperation) -> dict:
+    return {
+        "operation_id": op.operation_id, "run_id": op.run_id,
+        "step_index": op.step_index, "tool": op.tool,
+        "idempotency_key": op.idempotency_key, "args_hash": op.args_hash,
+        "state": op.state, "external_ref": op.external_ref,
+        "result": op.result, "error": op.error, "attempts": op.attempts,
+        "created_at": op.created_at.isoformat() if op.created_at else None,
+        "updated_at": op.updated_at.isoformat() if op.updated_at else None,
+    }
+
+
 def step_to_dict(step: AgentStep) -> dict:
     return {
         "step_index": step.step_index,
@@ -367,6 +564,7 @@ def step_to_dict(step: AgentStep) -> dict:
         "action": step.action,
         "args": step.args,
         "observation": step.observation,
+        "has_full_observation": bool(step.observation_full),
         "error": step.error,
         "latency_ms": step.latency_ms,
         "token_input": step.token_input,

@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import delete, update
 
 from app.agent.react import resume_run, start_run
-from app.agent.state import PostgresRunStore, new_run
+from app.agent.state import PostgresRunStore, ToolOperation, new_run
 from app.agent.worker import recover_once
 from app.db.models import AgentRun as AgentRunRow
 from app.db.models import AgentStep as AgentStepRow
@@ -114,6 +114,30 @@ def test_recover_expired_run_against_real_db():
         )
         assert run.id in recovered
         assert store.get(run.id).status == "completed"
+    finally:
+        _cleanup(run.id)
+
+
+def test_tool_operation_ledger_against_real_db():
+    init_schema()
+    store = PostgresRunStore()
+    run = store.create(new_run("operation"))
+    key = f"{run.id}:0:create_ticket:abc"
+    try:
+        op = store.begin_operation(ToolOperation(
+            operation_id="op1", run_id=run.id, step_index=0, tool="create_ticket",
+            idempotency_key=key, args_hash="abc",
+        ))
+        assert op.is_new is True
+        store.mark_operation(key, "succeeded", result={"ok": True})
+        found = store.get_operation(key)
+        assert found is not None and found.state == "succeeded"
+        assert store.list_operations(run.id)[0].tool == "create_ticket"
+        again = store.begin_operation(ToolOperation(
+            operation_id="op2", run_id=run.id, step_index=0, tool="create_ticket",
+            idempotency_key=key, args_hash="abc",
+        ))
+        assert again.is_new is False and again.state == "succeeded"
     finally:
         _cleanup(run.id)
 

@@ -20,6 +20,7 @@ _WORKBENCH = """<!doctype html>
   :root { color-scheme: light dark; --bg:#f6f7f9; --panel:#fff; --ink:#17202a; --muted:#68707a; --line:#dde2e8; --accent:#2f6fed; --ok:#1b7f4b; --bad:#b42318; }
   @media (prefers-color-scheme: dark) { :root { --bg:#11151a; --panel:#171d24; --ink:#e8edf3; --muted:#9aa6b2; --line:#2b3540; --accent:#79a5ff; --ok:#69d39a; --bad:#ff8a80; } }
   * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
   body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; }
   main { max-width:1000px; margin:0 auto; padding:28px 20px 60px; }
   h1 { font-size:24px; margin:0 0 4px; }
@@ -74,6 +75,13 @@ _WORKBENCH = """<!doctype html>
       <span id="status">idle</span>
     </div>
     <p class="hint">事件来自 <code>/agent/runs/stream</code>；审批后页面调用 approve/reject，再重放 <code>/agent/runs/{id}/events</code>。页面不保存 token。</p>
+  </section>
+
+  <section class="panel">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+      <strong>最近运行</strong><button id="historyRefresh">刷新</button>
+    </div>
+    <div id="history" class="hint" style="margin-top:8px">尚未加载</div>
   </section>
 
   <section class="panel" id="finalPanel" hidden>
@@ -160,6 +168,31 @@ _WORKBENCH = """<!doctype html>
     }
   }
 
+  async function loadHistory() {
+    try {
+      const res = await fetch("/agent/runs?limit=20", { headers: headers() });
+      if (!res.ok) { $("history").textContent = "历史加载失败 HTTP " + res.status; return; }
+      const data = await res.json();
+      $("history").innerHTML = "";
+      if (!data.runs || !data.runs.length) { $("history").textContent = "暂无运行"; return; }
+      for (const run of data.runs) {
+        const btn = document.createElement("button");
+        btn.style.margin = "3px 6px 3px 0";
+        btn.textContent = run.status + " · " + (run.goal || run.run_id).slice(0, 42);
+        btn.title = run.run_id;
+        btn.addEventListener("click", () => openRun(run.run_id));
+        $("history").appendChild(btn);
+      }
+    } catch (e) { $("history").textContent = "历史加载失败: " + e.message; }
+  }
+
+  async function openRun(runId) {
+    state.runId = runId; state.token = null; state.pendingStep = null;
+    $("events").innerHTML = ""; $("approval").hidden = true; $("finalPanel").hidden = true;
+    $("refresh").disabled = false; setStatus("history run");
+    await replay();
+  }
+
   async function showFinal() {
     if (!state.runId) return;
     try {
@@ -188,6 +221,7 @@ _WORKBENCH = """<!doctype html>
       $("runmeta").textContent = "run " + state.runId;
       $("refresh").disabled = false;
       await consume(res);
+      await loadHistory();
     } catch (e) { setStatus("error: " + e.message); }
     finally { state.busy = false; }
   }
@@ -199,6 +233,7 @@ _WORKBENCH = """<!doctype html>
       const res = await fetch("/agent/runs/" + encodeURIComponent(state.runId) + "/events", { headers: headers() });
       if (!res.ok) throw new Error("HTTP " + res.status);
       await consume(res);
+      await loadHistory();
     } catch (e) { setStatus("error: " + e.message); }
     finally { state.busy = false; }
   }
@@ -218,6 +253,9 @@ _WORKBENCH = """<!doctype html>
 
   $("start").addEventListener("click", start);
   $("refresh").addEventListener("click", replay);
+  $("historyRefresh").addEventListener("click", loadHistory);
+  const initialRun = new URLSearchParams(location.search).get("run_id");
+  if (initialRun) { openRun(initialRun); } else { loadHistory(); }
   $("approve").addEventListener("click", () => decide("approve"));
   $("reject").addEventListener("click", () => decide("reject"));
   $("cancel").addEventListener("click", () => decide("cancel"));
