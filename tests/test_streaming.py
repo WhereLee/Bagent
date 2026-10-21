@@ -53,8 +53,10 @@ def test_stream_answer_emits_meta_tokens_and_done(monkeypatch, one_chunk):
 
     events = list(streaming.stream_answer("问题", top_k=1))
     names = [name for name, _ in events]
-    assert names[0] == "start" and names[1] == "meta"
-    assert names[-1] == "done"
+    assert names == ["start", "meta", "token", "token", "token", "done"]
+    meta = events[1][1]
+    assert meta["rewritten_query"] == "问题" and meta["degraded"] is False
+    assert meta["sources"] and meta["sources"][0]["source"] == "doc.md"
     tokens = "".join(d["text"] for name, d in events if name == "token")
     assert tokens == "答案 以及 [1]"
     done = events[-1][1]

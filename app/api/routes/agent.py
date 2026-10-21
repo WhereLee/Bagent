@@ -18,6 +18,6 @@ def agent_run(req: AgentReq, request: Request) -> dict:
     from app.evaluation.trajectory import summarize_trajectories
 
     tenant = tenant_of(request)
-    tools = build_tools(tenant=tenant)
+    tools = build_tools(tenant=tenant, user_id=req.user_id)
     traj = run_agent(req.goal, llm=get_llm(), tools=tools, max_steps=req.max_steps)
     return {"result": traj, "metrics": summarize_trajectories([traj])}

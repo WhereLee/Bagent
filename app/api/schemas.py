@@ -81,6 +81,7 @@ class RefineReq(BaseModel):
 class AgentReq(BaseModel):
     goal: str
     max_steps: int = 6
+    user_id: str | None = None
 
 
 class EventReq(BaseModel):
