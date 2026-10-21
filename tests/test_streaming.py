@@ -1,0 +1,170 @@
+"""SSE 流式作答与引用过滤的 hermetic 测试（不连 DB/模型）。"""
+from __future__ import annotations
+
+import pytest
+
+from app.generation import generator, streaming
+from app.generation.citation import CitationStreamFilter
+from app.generation.llm import LLMUnavailable
+from app.retrieval.store import RetrievedChunk
+
+
+def _chunk(cid: int = 1, text: str = "证据") -> RetrievedChunk:
+    return RetrievedChunk(chunk_id=cid, document_id=1, source="doc.md", content=text,
+                          score=0.9, metadata={}, context=text)
+
+
+class FakeLLM:
+    def __init__(self, deltas: list[str] | None = None, *, fail: bool = False,
+                 fail_after: int | None = None) -> None:
+        self.deltas = deltas or []
+        self.fail = fail
+        self.fail_after = fail_after
+
+    def stream(self, system, user):
+        for i, d in enumerate(self.deltas):
+            if self.fail_after is not None and i >= self.fail_after:
+                raise LLMUnavailable("mid-stream boom")
+            yield d
+        if self.fail:
+            raise LLMUnavailable("boom")
+
+    def complete(self, system, user):
+        return "SUPPORTED"
+
+
+@pytest.fixture()
+def one_chunk(monkeypatch):
+    monkeypatch.setattr(generator, "retrieve", lambda *a, **k: [_chunk()])
+    monkeypatch.setattr(generator, "_memory_context", lambda *a, **k: "")
+
+
+def test_citation_stream_filter_buffers_split_citations():
+    f = CitationStreamFilter(num_sources=1)
+    out = f.feed("答案[") + f.feed("9] 和 [1") + f.feed("]") + f.flush()
+    assert out == "答案 和 [1]"
+
+
+def test_stream_answer_emits_meta_tokens_and_done(monkeypatch, one_chunk):
+    fake = FakeLLM(["答案[", "9] 以及 [1", "]"])
+    monkeypatch.setattr(streaming, "get_llm", lambda: fake)
+    monkeypatch.setattr(generator, "get_llm", lambda: fake)
+
+    events = list(streaming.stream_answer("问题", top_k=1))
+    names = [name for name, _ in events]
+    assert names[0] == "start" and names[1] == "meta"
+    assert names[-1] == "done"
+    tokens = "".join(d["text"] for name, d in events if name == "token")
+    assert tokens == "答案 以及 [1]"
+    done = events[-1][1]
+    assert done["invalid_citations"] == [9]
+    assert done["text"] == "答案 以及 [1]"
+    assert done["sources"][0]["source"] == "doc.md"
+    assert done["is_refusal"] is False
+
+
+def test_stream_answer_refusal_without_chunks(monkeypatch):
+    monkeypatch.setattr(generator, "retrieve", lambda *a, **k: [])
+    monkeypatch.setattr(generator, "_memory_context", lambda *a, **k: "")
+    events = list(streaming.stream_answer("问题", top_k=1))
+    names = [name for name, _ in events]
+    assert names[:2] == ["start", "meta"]
+    done = events[-1][1]
+    assert done["is_refusal"] is True
+    assert "无法回答" in done["text"]
+
+
+def test_stream_answer_llm_unavailable_before_tokens(monkeypatch, one_chunk):
+    fake = FakeLLM([], fail=True)
+    monkeypatch.setattr(streaming, "get_llm", lambda: fake)
+    monkeypatch.setattr(generator, "get_llm", lambda: fake)
+    events = list(streaming.stream_answer("问题", top_k=1))
+    names = [name for name, _ in events]
+    assert "error" in names and names[-1] == "done"
+    done = events[-1][1]
+    assert done["low_confidence"] is True
+    assert "服务暂时不可用" in done["text"]
+
+
+def test_stream_answer_llm_unavailable_mid_stream(monkeypatch, one_chunk):
+    fake = FakeLLM(["部分"], fail=True, fail_after=1)
+    monkeypatch.setattr(streaming, "get_llm", lambda: fake)
+    monkeypatch.setattr(generator, "get_llm", lambda: fake)
+    events = list(streaming.stream_answer("问题", top_k=1))
+    tokens = "".join(d["text"] for name, d in events if name == "token")
+    assert tokens == "部分"
+    done = events[-1][1]
+    assert done["text"] == "部分"
+    assert done["low_confidence"] is True
+
+
+def test_stream_answer_prepare_failure(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(streaming, "prepare_answer", boom)
+    events = list(streaming.stream_answer("问题"))
+    names = [name for name, _ in events]
+    assert names == ["start", "error", "done"]
+    assert events[-1][1]["low_confidence"] is True
+
+
+def test_llm_stream_falls_back_before_first_token(monkeypatch):
+    from app.generation.llm import LLMClient, Provider
+
+    client = object.__new__(LLMClient)
+    client.chain = [Provider("a", "u", "k", "m"), Provider("b", "u", "k", "m")]
+    client.max_retries = 1
+    client.base_delay = 0.0
+    client._retryable = (RuntimeError,)
+    client._status_err = RuntimeError
+    client._clients = {}
+
+    def fake_stream_once(p, system, user, temperature):
+        if p.name == "a":
+            raise RuntimeError("boom")
+        yield "ok"
+
+    monkeypatch.setattr(client, "_stream_once", fake_stream_once)
+    assert list(client.stream("s", "u")) == ["ok"]
+
+
+def test_llm_stream_does_not_retry_after_partial_output(monkeypatch):
+    from app.generation.llm import LLMClient, Provider
+
+    client = object.__new__(LLMClient)
+    client.chain = [Provider("a", "u", "k", "m")]
+    client.max_retries = 3
+    client.base_delay = 0.0
+    client._retryable = (RuntimeError,)
+    client._status_err = RuntimeError
+    client._clients = {}
+
+    def fake_stream_once(p, system, user, temperature):
+        yield "partial"
+        raise RuntimeError("mid-stream boom")
+
+    monkeypatch.setattr(client, "_stream_once", fake_stream_once)
+    with pytest.raises(RuntimeError):
+        list(client.stream("s", "u"))
+
+
+def test_sse_endpoint_frames(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api.main import app
+    from app.api.routes import query as query_route
+
+    def fake_stream(*args, **kwargs):
+        yield "start", {"query": "q"}
+        yield "token", {"text": "你好"}
+        yield "done", {"text": "你好", "sources": []}
+
+    monkeypatch.setattr(query_route, "stream_answer", fake_stream)
+    client = TestClient(app)   # 不用 with：避免触发 lifespan 连 DB
+    with client.stream("POST", "/query/stream", json={"query": "q"}) as resp:
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+        body = "".join(resp.iter_text())
+    assert "event: start" in body and "event: done" in body
+    assert "data:" in body

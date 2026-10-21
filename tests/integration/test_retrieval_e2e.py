@@ -91,6 +91,17 @@ def test_hybrid_retrieves_correct_doc(corpus):
         assert name in _sources(hits), (name, _sources(hits))
 
 
+def test_dense_and_hybrid_scores_are_nonzero(corpus):
+    """未 rerank 时也应返回 dense/RRF 实际分数，而不是旧实现的恒 0。"""
+    from app.retrieval.cache import get_retrieval_cache
+
+    get_retrieval_cache().clear()
+    for q in QUERIES.values():
+        for mode in ("dense", "hybrid"):
+            hits = retrieve(q, mode=mode, rerank=False, top_k=2)
+            assert hits and all(h.score > 0 for h in hits), (mode, q, [h.score for h in hits])
+
+
 def test_delete_removes_from_dense_and_lexical(corpus):
     run, tagged = corpus
     target = f"{run}|gamma_yak_gateway.md"

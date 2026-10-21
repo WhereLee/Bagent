@@ -10,6 +10,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 项目根目录 = 本文件上溯两级（app/config.py -> 项目根）
@@ -64,6 +65,9 @@ class Settings(BaseSettings):
     rrf_k: int = 60
     # 父子块：命中子块后是否扩展为父块内容喂给 LLM
     retrieve_parent: bool = True
+    # pgvector 查询期 HNSW 参数：0/空 = 不设置，沿用 pgvector 默认值（ef_search=40）
+    hnsw_ef_search: int = 0
+    hnsw_iterative_scan: str = ""      # 空 | relaxed_order | strict_order（需 pgvector 0.8+）
 
     # --- Chunking (parent-child / small-to-big) ---
     chunk_parent_tokens: int = 600
@@ -79,6 +83,8 @@ class Settings(BaseSettings):
     rerank_threads: int = 0          # >0 时限制 torch 线程，防并发过订
     reranker_backend: str = "st"     # st(sentence-transformers) | onnx(导出的小模型)
     reranker_onnx_path: str = "models/reranker-onnx/model_int8.onnx"  # backend=onnx 时用
+    # 0=不限；>0 时限制同时进行的 rerank 数，防止 CPU 线程过订（默认不改变现状）
+    rerank_max_concurrency: int = 0
 
     # --- Generation / Evidence chain (M3) ---
     force_citation: bool = True          # 是否强制引用（消融对照）
@@ -146,6 +152,28 @@ class Settings(BaseSettings):
     memory_promote_support: int = 2       # 佐证来源数≥此值促为 verified
     memory_dedup_sim: float = 0.92        # 去重/更新的相似度阈值
     memory_context_k: int = 3             # 注入作答的个人记忆条数
+
+    @field_validator("hnsw_ef_search")
+    @classmethod
+    def _validate_hnsw_ef_search(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("hnsw_ef_search 不能为负")
+        return v
+
+    @field_validator("hnsw_iterative_scan")
+    @classmethod
+    def _validate_hnsw_iterative_scan(cls, v: str) -> str:
+        v = (v or "").strip()
+        if v not in ("", "relaxed_order", "strict_order"):
+            raise ValueError("hnsw_iterative_scan 只能是空、relaxed_order 或 strict_order")
+        return v
+
+    @field_validator("rerank_max_concurrency")
+    @classmethod
+    def _validate_rerank_max_concurrency(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("rerank_max_concurrency 不能为负")
+        return v
 
     @property
     def sqlalchemy_url(self) -> str:

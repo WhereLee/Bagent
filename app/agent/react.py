@@ -37,7 +37,7 @@ def run_agent(
     """返回轨迹：steps[{thought,action,observation}]、final、status。"""
     tools = tools if tools is not None else TOOLS
     requires_confirm = requires_confirm or {"research"}
-    menu = describe_tools() if tools is TOOLS else "\n".join(f"- {n}" for n in tools)
+    menu = describe_tools(tools)
     history: list[dict] = [{"role": "user", "content": goal}]
     steps: list[dict] = []
     status = "budget_exceeded"

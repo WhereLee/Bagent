@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import heapq
 import math
 from collections import Counter, defaultdict
 from threading import Lock
@@ -41,14 +42,19 @@ def tokenize(text: str) -> list[str]:
 
 
 class BM25Index:
-    """纯内存 BM25 索引：build 一次，query 多次。"""
+    """纯内存 BM25 倒排索引：build 一次，query 多次。
+
+    postings 让查询只遍历"命中查询词"的文档，而不是每次都对全库打分；
+    索引仍在进程内存中，规模上限与迁移路径见模块文档。
+    """
 
     def __init__(self, k1: float = 1.5, b: float = 0.75) -> None:
         self.k1 = k1
         self.b = b
         self.doc_ids: list[int] = []
         self.doc_tenant: list[str | None] = []
-        self.tf: list[Counter] = []
+        # term -> [(doc_idx, tf), ...]
+        self.postings: dict[str, list[tuple[int, int]]] = {}
         self.doc_len: list[int] = []
         self.df: dict[str, int] = {}
         self.avgdl: float = 0.0
@@ -56,17 +62,22 @@ class BM25Index:
 
     def build(self, docs: list[tuple]) -> None:
         # 兼容 (id, toks) 与 (id, toks, tenant)；tenant 缺省为 None
-        self.doc_ids = [d[0] for d in docs]
-        self.doc_tenant = [d[2] if len(d) > 2 else None for d in docs]
-        self.tf = [Counter(d[1]) for d in docs]
-        self.doc_len = [len(d[1]) for d in docs]
-        df: dict[str, int] = defaultdict(int)
-        for tf in self.tf:
-            for term in tf:
-                df[term] += 1
-        self.df = df
+        doc_ids = [d[0] for d in docs]
+        doc_tenant = [d[2] if len(d) > 2 else None for d in docs]
+        doc_len = [len(d[1]) for d in docs]
+
+        postings: dict[str, list[tuple[int, int]]] = defaultdict(list)
+        for i, d in enumerate(docs):
+            for term, tf in Counter(d[1]).items():
+                postings[term].append((i, tf))
+
+        self.doc_ids = doc_ids
+        self.doc_tenant = doc_tenant
+        self.doc_len = doc_len
+        self.postings = dict(postings)
+        self.df = {term: len(items) for term, items in self.postings.items()}
         self.n = len(docs)
-        self.avgdl = (sum(self.doc_len) / self.n) if self.n else 0.0
+        self.avgdl = (sum(doc_len) / self.n) if self.n else 0.0
 
     def _idf(self, term: str) -> float:
         df = self.df.get(term, 0)
@@ -74,28 +85,24 @@ class BM25Index:
         return math.log(1 + (self.n - df + 0.5) / (df + 0.5))
 
     def search(self, query_tokens: list[str], top_k: int, tenant: str | None = None) -> list[tuple[int, float]]:
-        if self.n == 0 or not query_tokens:
+        if self.n == 0 or not query_tokens or top_k <= 0:
             return []
-        scores = [0.0] * self.n
+        scores: dict[int, float] = {}
         for term in set(query_tokens):
+            postings = self.postings.get(term)
+            if not postings:
+                continue
             idf = self._idf(term)
-            for i, tf in enumerate(self.tf):
-                f = tf.get(term, 0)
-                if f == 0:
+            for i, f in postings:
+                if tenant is not None and self.doc_tenant[i] != tenant:
                     continue
                 norm = self.k1 * (1 - self.b + self.b * self.doc_len[i] / self.avgdl)
-                scores[i] += idf * (f * (self.k1 + 1)) / (f + norm)
-        order = sorted(range(self.n), key=lambda i: scores[i], reverse=True)
-        out: list[tuple[int, float]] = []
-        for i in order:
-            if scores[i] <= 0:
-                break
-            if tenant is not None and self.doc_tenant[i] != tenant:
-                continue
-            out.append((self.doc_ids[i], scores[i]))
-            if len(out) >= top_k:
-                break
-        return out
+                scores[i] = scores.get(i, 0.0) + idf * (f * (self.k1 + 1)) / (f + norm)
+        if not scores:
+            return []
+        # 分数降序；同分时 doc_idx 小者优先，与旧版全量稳定排序一致
+        best = heapq.nlargest(top_k, scores.items(), key=lambda kv: (kv[1], -kv[0]))
+        return [(self.doc_ids[i], score) for i, score in best]
 
 
 class LexicalRetriever:
@@ -136,7 +143,10 @@ class LexicalRetriever:
                 .where(Chunk.embedding.isnot(None), Document.is_deleted == False)  # noqa: E712
             ).all()
             docs = [(r.id, tokenize(r.content), (r.metadata_ or {}).get("tenant")) for r in rows]
-            self._index.build(docs)
+            # 先构建新索引再一次性替换，避免并发搜索看到半构建状态
+            new_index = BM25Index()
+            new_index.build(docs)
+            self._index = new_index
             self._generation = gen
             log_event(_log, "info", "bm25_rebuild", n_docs=self._index.n, generation=str(gen))
 
@@ -144,7 +154,8 @@ class LexicalRetriever:
         session = get_session()
         try:
             self._ensure_index(session)
-            return self._index.search(tokenize(query), top_k, tenant)
+            index = self._index   # 取本地引用：即使并发重建，本次查询也用完整快照
+            return index.search(tokenize(query), top_k, tenant)
         finally:
             session.close()
 

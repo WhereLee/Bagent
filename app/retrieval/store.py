@@ -8,6 +8,7 @@ import numpy as np
 from sqlalchemy import Text, delete, func, select, text
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db.models import Chunk, Document
 from app.ingestion.chunking import ParentChunk
 
@@ -120,11 +121,27 @@ def index_document(
     return doc.id, n_children, action
 
 
+_HNSW_ITERATIVE_SCAN = {"relaxed_order", "strict_order"}
+
+
+def _apply_hnsw_settings(session: Session) -> None:
+    """按配置设置查询期 HNSW 参数；默认 0/空 = 不执行，保持 pgvector 原行为。"""
+    s = get_settings()
+    if s.hnsw_ef_search > 0:
+        session.execute(text(f"SET LOCAL hnsw.ef_search = {int(s.hnsw_ef_search)}"))
+    scan = (s.hnsw_iterative_scan or "").strip()
+    if scan:
+        if scan not in _HNSW_ITERATIVE_SCAN:
+            raise ValueError(f"不支持的 hnsw_iterative_scan: {scan}")
+        session.execute(text(f"SET LOCAL hnsw.iterative_scan = '{scan}'"))
+
+
 def vector_search(session: Session, query_vec: np.ndarray, top_k: int,
                   tenant: str | None = None) -> list[RetrievedChunk]:
     """稠密 TopK（只检索有向量的子块）。cosine 距离，score = 1 - distance。
 
     tenant 非空则仅召回该租户文档（数据面强制，与 lexical/缓存三路一致）。"""
+    _apply_hnsw_settings(session)
     vec_literal = "[" + ",".join(f"{x:.6f}" for x in query_vec) + "]"
     sql = text(
         """
@@ -150,20 +167,26 @@ def vector_search(session: Session, query_vec: np.ndarray, top_k: int,
 
 
 def load_children(session: Session, child_ids: list[int]) -> dict[int, RetrievedChunk]:
-    """按 id 批量取子块（保序信息交给调用方）。"""
+    """按 id 批量取子块（保序信息交给调用方）。
+
+    只取检索需要的列：不加载 512 维 embedding（避免每查询白搬 20×512 浮点）。
+    """
     if not child_ids:
         return {}
     rows = session.execute(
-        select(Chunk, Document.source)
+        select(
+            Chunk.id, Chunk.document_id, Chunk.content, Chunk.metadata_,
+            Chunk.parent_id, Document.source,
+        )
         .join(Document, Document.id == Chunk.document_id)
         .where(Chunk.id.in_(child_ids))
     ).all()
     out: dict[int, RetrievedChunk] = {}
-    for chunk, source in rows:
-        out[chunk.id] = RetrievedChunk(
-            chunk_id=chunk.id, document_id=chunk.document_id, source=source,
-            content=chunk.content, score=0.0, metadata=chunk.metadata_ or {},
-            parent_id=chunk.parent_id,
+    for chunk_id, document_id, content, metadata, parent_id, source in rows:
+        out[chunk_id] = RetrievedChunk(
+            chunk_id=chunk_id, document_id=document_id, source=source,
+            content=content, score=0.0, metadata=metadata or {},
+            parent_id=parent_id,
         )
     return out
 
@@ -174,8 +197,10 @@ def expand_to_parents(session: Session, chunks: list[RetrievedChunk]) -> None:
     if not parent_ids:
         return
     parents = {
-        p.id: p.content
-        for p in session.scalars(select(Chunk).where(Chunk.id.in_(parent_ids))).all()
+        pid: content
+        for pid, content in session.execute(
+            select(Chunk.id, Chunk.content).where(Chunk.id.in_(parent_ids))
+        ).all()
     }
     for c in chunks:
         if c.parent_id and c.parent_id in parents:

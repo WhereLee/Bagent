@@ -1,4 +1,8 @@
 """BM25 词法检索的单元测试（jieba 分词，无需 DB/网络）。"""
+import math
+import random
+from collections import Counter
+
 from app.retrieval.lexical import BM25Index, tokenize
 
 
@@ -36,3 +40,58 @@ def test_bm25_empty_index_or_query():
     assert idx.search(tokenize("任意"), top_k=3) == []
     idx.build([(1, tokenize("hello"))])
     assert idx.search([], top_k=3) == []
+
+
+def test_bm25_tenant_filter_keeps_only_target_tenant():
+    idx = BM25Index()
+    idx.build([(1, ["网关"], "t1"), (2, ["网关"], "t2"), (3, ["网关"])])
+    assert [d for d, _ in idx.search(["网关"], top_k=5, tenant="t1")] == [1]
+    assert [d for d, _ in idx.search(["网关"], top_k=5, tenant="t2")] == [2]
+    assert {d for d, _ in idx.search(["网关"], top_k=5)} == {1, 2, 3}
+
+
+def _brute_force(docs, query_tokens, top_k, k1=1.5, b=0.75):
+    """测试内参照实现：与旧版一致的逐查询词全库扫描。"""
+    n = len(docs)
+    doc_ids = [d[0] for d in docs]
+    doc_tf = [Counter(d[1]) for d in docs]
+    doc_len = [len(d[1]) for d in docs]
+    avgdl = (sum(doc_len) / n) if n else 0.0
+    df: dict[str, int] = {}
+    for tf in doc_tf:
+        for term in tf:
+            df[term] = df.get(term, 0) + 1
+    scores = [0.0] * n
+    for term in set(query_tokens):
+        idf = math.log(1 + (n - df.get(term, 0) + 0.5) / (df.get(term, 0) + 0.5))
+        for i, tf in enumerate(doc_tf):
+            f = tf.get(term, 0)
+            if not f:
+                continue
+            norm = k1 * (1 - b + b * doc_len[i] / avgdl)
+            scores[i] += idf * (f * (k1 + 1)) / (f + norm)
+    order = sorted(range(n), key=lambda i: scores[i], reverse=True)
+    out = []
+    for i in order:
+        if scores[i] <= 0 or len(out) >= top_k:
+            break
+        out.append((doc_ids[i], scores[i]))
+    return out
+
+
+def test_bm25_inverted_index_matches_bruteforce():
+    rnd = random.Random(2026)
+    vocab = [f"w{i}" for i in range(80)]
+    docs = []
+    for doc_id in range(120):
+        toks = [rnd.choice(vocab) for _ in range(rnd.randint(5, 20))]
+        docs.append((doc_id, toks))
+    idx = BM25Index()
+    idx.build(docs)
+    for _ in range(30):
+        query = [rnd.choice(vocab) for _ in range(rnd.randint(1, 4))]
+        expected = _brute_force(docs, query, top_k=10)
+        actual = idx.search(query, top_k=10)
+        assert [d for d, _ in actual] == [d for d, _ in expected]
+        for (_, a), (_, e) in zip(actual, expected):
+            assert abs(a - e) < 1e-9

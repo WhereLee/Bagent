@@ -15,6 +15,10 @@ def test_defaults_are_standalone_rag():
     assert s.mimo_model.startswith("mimo-v2.6")
     assert s.embedding_model_name.startswith("BAAI/")
     assert s.embedding_dim == 512
+    # 新增检索参数默认不改变现有行为
+    assert s.hnsw_ef_search == 0
+    assert s.hnsw_iterative_scan == ""
+    assert s.rerank_max_concurrency == 0
 
 
 def test_doc_hash_is_deterministic_and_content_sensitive():

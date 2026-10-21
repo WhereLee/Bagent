@@ -56,16 +56,22 @@ def retrieve(
     with STAGE_LATENCY.labels(stage="retrieval").time():
         try:
             dense_hits = vector_search(session, qvec, cand_n, tenant=tenant)
-            dense_ids = [h.chunk_id for h in dense_hits]
+            # vector_search 已带回完整子块内容，直接复用；只补查"仅词法命中"的块
+            dense_by_id = {h.chunk_id: h for h in dense_hits}
+            fused_scores: dict[int, float] = {}
 
             if mode == "hybrid":
                 lexical_ids = [cid for cid, _ in get_lexical_retriever().search(query, cand_n, tenant=tenant)]
-                fused = rrf_fuse([dense_ids, lexical_ids], k=s.rrf_k)
+                fused = rrf_fuse([list(dense_by_id), lexical_ids], k=s.rrf_k)
                 ordered_ids = [cid for cid, _ in fused]
+                fused_scores = dict(fused)
             else:  # dense
-                ordered_ids = dense_ids
+                ordered_ids = [h.chunk_id for h in dense_hits]
 
-            pool = load_children(session, ordered_ids)
+            pool = dict(dense_by_id)
+            missing = [cid for cid in ordered_ids if cid not in pool]
+            if missing:
+                pool.update(load_children(session, missing))
             candidates = [pool[cid] for cid in ordered_ids if cid in pool]
 
             # 自适应早退：dense 首分已足够高（置信充分）则跳过 rerank 降延迟
@@ -74,6 +80,11 @@ def retrieve(
                 do_rerank = False
                 log_event(_log, "info", "rerank_skipped", top1=round(dense_hits[0].score, 4),
                           threshold=s.rerank_skip_threshold)
+
+            # hybrid 未精排时回填 RRF 分；dense 的分数已在 vector_search 中保留
+            if mode == "hybrid" and not do_rerank:
+                for c in candidates:
+                    c.score = fused_scores.get(c.chunk_id, c.score)
 
             if do_rerank and candidates:
                 # 只对粗召回的前 candidate_n 个精排（Cross-Encoder 贵，限制精排面）

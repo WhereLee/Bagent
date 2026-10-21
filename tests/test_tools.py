@@ -29,3 +29,31 @@ def test_mcp_server_binds_all_tools():
     listed = asyncio.run(server.list_tools())
     names = {t.name for t in listed}
     assert set(tools.TOOLS) <= names
+
+
+def test_build_tools_binds_tenant_and_user(monkeypatch):
+    seen = {}
+
+    def fake_retrieve(query, top_k=None, tenant=None, **kwargs):
+        seen["tenant"] = tenant
+        return []
+
+    def fake_answer(query, top_k=None, user_id=None, tenant=None, **kwargs):
+        from app.generation.generator import Answer
+
+        seen["user_id"] = user_id
+        seen["answer_tenant"] = tenant
+        return Answer(query=query, text="ok", sources=[])
+
+    monkeypatch.setattr("app.retrieval.retriever.retrieve", fake_retrieve)
+    monkeypatch.setattr("app.generation.generator.answer_query", fake_answer)
+
+    bound = tools.build_tools(tenant="T1", user_id="U1", compact=True)
+    bound["kb_search"]("q", top_k=3)
+    assert seen["tenant"] == "T1"
+
+    assert bound["kb_answer"]("q")["text"] == "ok"
+    assert seen["answer_tenant"] == "T1" and seen["user_id"] == "U1"
+
+    desc = tools.describe_tools(bound)
+    assert "kb_search" in desc and "memory_search" in desc

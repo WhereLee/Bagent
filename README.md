@@ -21,7 +21,7 @@
 | 吞吐与瓶颈定位 | 重排候选 20→5：平均时延 **26.1s→4.2s**、吞吐 **0.29→1.58 req/s**；靠 `/metrics` 阶段计时把瓶颈定在 CPU 上的 rerank（比其余环节慢约 180×） | `locustfile.py` + `app/observability/` |
 | 多租户强制 | HMAC 签名租户令牌 fail-closed + 入库盖章 + **dense / BM25 / 缓存三路一致过滤**，跨租户读写与删除均有回归用例钉住 | `tests/test_tenant*.py` |
 | 对抗测试 | 注入对抗用例集用真实 payload 验防护拦得住（并因此补上了 `new instructions:` 漏网模式） | `tests/test_injection_adversarial.py` |
-| 测试与 CI | 170 个测试函数（含 13 个跑真 pgvector 服务容器的集成用例），单测全 hermetic（不联网、不依赖模型）；CI 四 job：单测 / 集成 / 密钥扫描 / 镜像构建 | `.github/workflows/ci.yml` |
+| 测试与 CI | 220 个测试函数（204 个 hermetic 单测 + 16 个跑真 pgvector 的集成用例），单测不联网、不依赖模型；CI 四 job：单测 / 集成 / 密钥扫描 / 镜像构建 | `.github/workflows/ci.yml` |
 
 ## 这是什么（产品定位）
 
@@ -66,8 +66,10 @@ app/
                      · contamination（污染 A/B 三臂）· trajectory（收敛率/非法动作率）
   observability/     logging（JSON + request_id）· metrics（Prometheus）· middleware
   tools.py · mcp_server.py · tenant.py · security.py · ratelimit.py
-  api/main.py        # FastAPI 入口（/query /chat /research /agent /memory /events ...）
-scripts/   eval_* · quantize_* · export_* · chunk_sweep · verify_* · rag_cli · init_db
+  api/               main.py（装配/中间件）· schemas.py · deps.py
+                     routes/（health · ops · ingest · search · query · memory · research · events · agent）
+                     # /query /chat /query/stream /chat/stream /research /agent /memory /events ...
+scripts/   eval_* · quantize_* · export_* · bench_bm25 · chunk_sweep · verify_* · rag_cli · init_db
 deploy/    searxng/ · prometheus/slo.rules.yml · start_app.sh · server_*.sh · *_smoke.sh
 tests/     hermetic 单测 + tests/integration（真 pgvector）
 data/      corpus/ · golden/ · benchmark/     docs/  design.md · SLO.md · 里程碑记录
@@ -76,8 +78,8 @@ data/      corpus/ · golden/ · benchmark/     docs/  design.md · SLO.md · �
 ## 边界与取舍（知道在哪停下来，而不是假装没有边界）
 
 - **单进程部署**：BM25 内存索引、检索缓存、令牌桶、研究会话四处进程内状态，`start_app.sh` 故意不加 `--workers`；M13 已把后三者做成可切 Redis（接口不变、默认内存），横向扩展时逐项外置即可。
-- **BM25 词法腿的规模上限**：打分是 Python 层逐查询词遍历 tf，且任一写入即全库重建。万级子块会开始吃秒级；接口已抽象为 `SearchProvider` / `lexical`，过阈值切 pg_search 或 Elasticsearch 不动其余链路。
-- **HNSW 带 WHERE 过滤的召回退化**：`is_deleted` / `tenant` 与向量条件写在同一 WHERE，pgvector 默认 `ef_search=40`、`iterative_scan=off`，过滤选择率低时会真少返。已列为上量后的第一个实测项（方案：`relaxed_order` / 调大 `ef_search` / 按租户部分索引）。
+- **BM25 词法腿的规模上限**：已是内存倒排 postings，查询只对命中文档打分（不再逐词全库遍历）；但任一写入仍触发全库重建，万级子块的重建成本仍在。接口已抽象为 `SearchProvider` / `lexical`，过阈值切 pg_search 或 Elasticsearch 不动其余链路。
+- **HNSW 带 WHERE 过滤的召回退化**：`is_deleted` / `tenant` 与向量条件写在同一 WHERE，pgvector 默认 `ef_search=40`、`iterative_scan=off`，过滤选择率低时会真少返。已提供 `HNSW_EF_SEARCH` / `HNSW_ITERATIVE_SCAN` 查询期开关（默认不设置，保持原行为）；上量后按实测选择 `relaxed_order` / 调大 `ef_search` / 按租户部分索引。
 - **未引 Alembic**：项目规模下幂等 DDL + `ALTER ... IF NOT EXISTS` 足够；**换 embedding 模型需改 `vector(512)` 并全量重建**（维度与模型绑定，这是向量库的固有约束，不是实现偷工）。
 - **默认全关**：self-RAG、联网、写回记忆、成本降级均需显式开关（配了不等于开了，也不静默花钱）；`/ingest` 只允许读 `INGEST_ALLOWED_ROOT` 下的文件。
 - **评测口径的诚实标注**：n=600 是在 4000 段池、文档级 K=10 下得出；更大语料维度（如 T2Ranking）与 rerank 在 600 样本上的重跑仍为延后项，已在正文标注而不是隐掉。
@@ -131,6 +133,8 @@ data/      corpus/ · golden/ · benchmark/     docs/  design.md · SLO.md · �
 结论：**hybrid 显著提升 recall@3（+0.18）**，**rerank 显著提升排序质量（MRR/nDCG）**；
 rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——该取舍在 M3 调候选池/阈值。
 
+> 接口说明：未启用 rerank 时，`/search` 的 `score` 现在返回 dense 相似度（dense 模式）或 RRF 融合分（hybrid 模式），不再恒为 0；排序结果不变。
+
 **Reranker 量化（三方 A/B，`scripts/eval_rerank_ab.py` 本机实测）**：导出 ONNX int8（`scripts/export_reranker_onnx.py`）后，磁盘 **1.1G→279MB**；DuRetrieval(cand=20,K=10,n=40)：
 
 | backend | recall@10 | mrr | ndcg@10 |
@@ -161,18 +165,21 @@ rerank 会轻微拉低 recall@k（重排把边缘相关块排出截断）——�
   LLM token 用量、拒答与低置信计数、限流拒绝计数。
 - **日志**：结构化 JSON，每请求一个 `request_id` 贯穿（响应头 `X-Request-ID` 同步返回）。
 - **限流**：令牌桶，按客户端 IP；超限返回 **429 + Retry-After**（burst=10、5/s）。实测并发 30 → **10 放行 / 20 拒绝**。
-- **多轮**：`POST /chat` 传 `history`，服务端做查询改写（指代消解）后检索生成。
+- **多轮**：`POST /chat` 传 `history`，服务端做查询改写（指代消解）后检索生成；需要边生成边看时用 `POST /chat/stream`（SSE，同一套 prepare/finalize 口径）。
+- **检索运行参数**：`HNSW_EF_SEARCH`（0=不设置）、`HNSW_ITERATIVE_SCAN`（空/`relaxed_order`/`strict_order`）、`RERANK_MAX_CONCURRENCY`（0=不限）均为可选旋钮，默认不改变现有行为。
 - **压测**：`pip install -r requirements-dev.txt` 后
   `locust -f locustfile.py --host http://127.0.0.1:8000 --headless -u 50 -r 10 -t 60s`。
 - **部署**：`docker compose up -d --build`（起 pgvector 库 + app；模型权重挂载 `./models`，不入镜像）。
 
 ### HTTP 端点
 
-- 基础：`GET /health`、`GET /metrics`、`POST /ingest`、`POST /delete`、`POST /search`、`POST /query`、`POST /chat`（文档 `/docs`）
+- 基础：`GET /health`、`GET /ready`、`GET /metrics`、`POST /ingest`、`POST /delete`、`POST /search`、`POST /query`、`POST /chat`（文档 `/docs`）
+- 流式：`POST /query/stream`、`POST /chat/stream`（SSE：`start`→`meta`→`token`*→`done`；失败插入 `error` 但仍以 `done` 收尾；`done` 携带 sources/faithfulness/invalid_citations/conflict_note）
+- 运维可见性：`GET /documents`（活跃文档与父/子块计数）、`GET /stats`（文档/块/记忆计数与 trust 分布），均按租户过滤
 - 记忆：`GET /memory`、`POST /memory/promote`、`POST /memory/invalidate`、`POST /memory/feedback`（结果回标驱动促升/作废）
 - 研究与 Agent：`POST /research`、`GET /research/{sid}`、`POST /research/{sid}/refine`、`POST /research/{sid}/publish`（论断→knowledge 记忆，受同一 trust 门控）、`POST /agent`
-- 经验复用：`POST /events`、`GET /events/{event_id}/playbook`（复盘整体归档与取回）
-- 鉴权：设了 `API_KEY` 后，除 `/health`/`/metrics`/`/docs` 外均需请求头 `X-API-Key`（恒定时间比较）；多租户模式下还需 `X-Tenant` 签名令牌，缺/错直接 403 fail-closed
+- 经验复用：`POST /events`、`GET /events/{event_id}/playbook`（复盘整体归档与取回；memory 按 tenant 过滤，事件元数据保持全局）
+- 鉴权：设了 `API_KEY` 后，除 `/health`/`/ready`/`/metrics`/`/docs` 外均需请求头 `X-API-Key`（恒定时间比较）；多租户模式下还需 `X-Tenant` 签名令牌，缺/错直接 403 fail-closed
 
 ## 测试与评估纵深（M7）
 
@@ -319,6 +326,8 @@ join documents 过滤 `is_deleted`；新增按 `source` 的 upsert（内容变�
 | hybrid+rerank candidate_n=20 | 26.1s | ~30s | 0.29 req/s | 0 |
 | hybrid+rerank candidate_n=5 | 4.2s | 5.8s | **1.58 req/s** | 0 |
 | /health | 16ms | — | — | 0 |
+
+**BM25 微基准（合成数据，非真实语料）**：`scripts/bench_bm25.py` 1 万文档 / 200 查询，倒排索引查询 0.10~0.16s vs 旧全量扫描 1.43~2.16s（本机两次运行约 **13~15×**），top-K 200/200 一致；真实召回质量仍以 `scripts/eval_retrieval.py` 为准。
 
 **瓶颈定位（靠 /metrics 阶段计时）**：retrieval 阶段 25.6s 里 **rerank 占 25.5s**，embedding+pgvector 仅 ~0.1s
 ——CPU 上的 Cross-Encoder rerank 是吞吐天花板，比其余环节慢 ~180×。`candidate_n` 同时是**质量旋钮与延迟旋钮**（降到5 → 吞吐×5、p99 30s→5.8s）。

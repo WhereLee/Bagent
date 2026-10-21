@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from functools import lru_cache
 from pathlib import Path
 
@@ -44,12 +45,35 @@ class Reranker:
         """返回与 doc_texts 等长的相关性分数（越大越相关）。"""
         if not doc_texts:
             return []
+        sem = _get_semaphore()
+        if sem is None:
+            return self._rerank_impl(query, doc_texts)
+        with sem:
+            return self._rerank_impl(query, doc_texts)
+
+    def _rerank_impl(self, query: str, doc_texts: list[str]) -> list[float]:
         pairs = [(query, d) for d in doc_texts]
         scores = self.model.predict(pairs, show_progress_bar=False)
         return [float(x) for x in scores]
 
 
 _reranker: Reranker | None = None
+_sem: threading.BoundedSemaphore | None = None
+_sem_limit: int | None = None
+_sem_lock = threading.Lock()
+
+
+def _get_semaphore() -> threading.BoundedSemaphore | None:
+    """按配置返回 rerank 并发闸门；0=不限，保持旧行为。"""
+    global _sem, _sem_limit
+    limit = get_settings().rerank_max_concurrency
+    if limit <= 0:
+        return None
+    with _sem_lock:
+        if _sem is None or _sem_limit != limit:
+            _sem = threading.BoundedSemaphore(int(limit))
+            _sem_limit = int(limit)
+        return _sem
 
 
 class OnnxReranker:
@@ -79,6 +103,13 @@ class OnnxReranker:
     def rerank(self, query: str, doc_texts: list[str]) -> list[float]:
         if not doc_texts:
             return []
+        sem = _get_semaphore()
+        if sem is None:
+            return self._rerank_impl(query, doc_texts)
+        with sem:
+            return self._rerank_impl(query, doc_texts)
+
+    def _rerank_impl(self, query: str, doc_texts: list[str]) -> list[float]:
         enc = self.tokenizer([query] * len(doc_texts), doc_texts, padding=True, truncation=True,
                              max_length=self.max_length, return_tensors="pt")
         feeds = {k: enc[k].numpy() for k in ("input_ids", "attention_mask") if k in self.input_names}
@@ -104,5 +135,8 @@ def get_reranker() -> Reranker | OnnxReranker:
 
 
 def reset_reranker() -> None:
-    global _reranker
+    global _reranker, _sem, _sem_limit
     _reranker = None
+    with _sem_lock:
+        _sem = None
+        _sem_limit = None

@@ -132,3 +132,23 @@ def test_event_archive_playbook(owner):
         assert any(f["content"].startswith("文昌露营点A") for f in pb["facts"])
     finally:
         s.rollback(); s.close()
+
+
+def test_event_playbook_filters_memories_by_tenant(owner):
+    s = get_session()
+    try:
+        ev = ms.create_event(s, name="租户复盘" + owner, type="活动", created_by=owner)
+        s.flush()
+        content_t1 = "T1 原则" + owner
+        content_t2 = "T2 原则" + owner
+        ms.add_memory(s, scope="knowledge", content=content_t1, embedding=_v("T1 原则"),
+                      trust="verified", level="playbook", event_id=ev.id, tenant_id="T1")
+        ms.add_memory(s, scope="knowledge", content=content_t2, embedding=_v("T2 原则"),
+                      trust="verified", level="playbook", event_id=ev.id, tenant_id="T2")
+        s.commit()
+
+        assert ms.event_playbook(s, ev.id, tenant="T1")["playbook"] == [content_t1]
+        assert ms.event_playbook(s, ev.id, tenant="T2")["playbook"] == [content_t2]
+        assert set(ms.event_playbook(s, ev.id)["playbook"]) == {content_t1, content_t2}
+    finally:
+        s.rollback(); s.close()

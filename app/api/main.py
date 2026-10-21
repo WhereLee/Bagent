@@ -1,35 +1,23 @@
-"""Bagent RAG —— FastAPI 服务入口。"""
-from __future__ import annotations
+"""Bagent RAG —— FastAPI 服务入口（应用装配 + 生命周期）。
 
-from dataclasses import asdict
+路由按领域拆分在 app/api/routes/，这里只负责：
+- lifespan（结构化日志、幂等建表、连接池预热）
+- 中间件（request_id / 指标 / 鉴权 / 限流）
+- 把各路由挂到同一个 app 上（对外 URL 不变）
+"""
+from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from pydantic import BaseModel
-from starlette.responses import Response
+from fastapi import FastAPI
 
+from app.api.routes import agent, events, health, ingest, memory, ops, query, research, search
 from app.config import get_settings
 from app.db.session import get_engine, init_schema
-from app.generation.generator import answer_query
-from app.generation.llm import get_llm
-from app.ingestion.embedder import get_embedder
-from app.ingestion.indexer import ingest_file
-from app.db.session import get_session
-from app.tenant import TenantError, resolve_tenant
-from app.memory.store import invalidate as mem_invalidate
-from app.memory.store import create_event, event_playbook, list_memories, record_feedback, set_trust
-from app.memory.writeback import run_writeback
-from app.observability.logging import configure_logging, get_logger
-from app.observability.metrics import render_metrics
+from app.observability.logging import configure_logging
 from app.observability.middleware import ObservabilityMiddleware
-from app.ratelimit import RateLimiter, get_rate_limiter
-from app.retrieval.retriever import retrieve
-from app.retrieval.cache import get_retrieval_cache
-from app.retrieval.store import delete_document
-from app.research import agent as research_agent
-from app.research import session as research_session
-from app.research.publish import publish as research_publish
+from app.ratelimit import get_rate_limiter
+
 
 @asynccontextmanager
 async def _lifespan(_app):
@@ -40,384 +28,21 @@ async def _lifespan(_app):
     yield
 
 
-app = FastAPI(title="Bagent RAG", version="0.1.0", lifespan=_lifespan)
+def create_app() -> FastAPI:
+    application = FastAPI(title="Bagent RAG", version="0.1.0", lifespan=_lifespan)
 
-_s = get_settings()
-if _s.rate_limit_enabled:
-    _limiter: RateLimiter | None = get_rate_limiter() if _s.rate_limit_enabled else None
-else:
-    _limiter = None
-app.add_middleware(ObservabilityMiddleware, limiter=_limiter, api_key=(_s.api_key or None),
-                   trust_proxy=_s.trust_proxy_headers)
-
-
-class IngestReq(BaseModel):
-    path: str
-
-
-class DeleteReq(BaseModel):
-    source: str
-
-
-class QueryReq(BaseModel):
-    query: str
-    top_k: int | None = None
-    self_rag: bool | None = None   # 覆盖默认：是否启用 self-RAG/冲突检测
-    user_id: str | None = None     # 传入则启用个人记忆/写回
-    agent: bool = False            # 走显式工具循环（有界 ReAct）而非单次管道
-
-
-class ChatReq(BaseModel):
-    query: str
-    history: list[dict] = []  # [{"role":"user"|"assistant","content":str}]
-    top_k: int | None = None
-    self_rag: bool | None = None
-    user_id: str | None = None
-
-
-class SearchReq(BaseModel):
-    query: str
-    top_k: int = 5
-
-
-@app.get("/health")
-def health() -> dict:
     s = get_settings()
-    info = {
-        "status": "ok",
-        "llm_provider": s.llm_primary_provider,
-        "llm_fallback": s.llm_fallback_provider or None,
-        "embedding": s.embedding_model_name,
-        "retrieval_mode": s.retrieval_mode,
-        "auth": bool(s.api_key),
-    }
-    try:
-        info["llm_model"] = get_llm().chain[0].model
-    except Exception:  # noqa: BLE001  provider 未配置时不影响健康检查
-        info["llm_model"] = None
-    return info
-
-
-@app.get("/metrics")
-def metrics() -> Response:
-    body, ctype = render_metrics()
-    return Response(content=body, media_type=ctype)
-
-
-@app.post("/ingest")
-def ingest(req: IngestReq, request: Request) -> dict:
-    tenant = _tenant_of(request)
-    # 路径限制在白名单目录下（防用任意 .txt/.md/.pdf 读取服务器文件并回显）
-    from pathlib import Path
-    from app.config import ROOT_DIR
-    root = (ROOT_DIR / get_settings().ingest_allowed_root).resolve()
-    try:
-        target = Path(req.path).resolve()
-        target.relative_to(root)
-    except Exception:
-        raise HTTPException(status_code=400, detail=f"ingest path 必须位于 {root} 下")
-    try:
-        result = ingest_file(target, tenant=tenant)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"入库失败: {e}")
-    return asdict(result)
-
-
-@app.post("/search")
-def search(req: SearchReq, request: Request) -> dict:
-    """检索预览：走与 /query 相同的 retrieve()（hybrid+RRF+rerank+父扩展），按租户过滤。"""
-    hits = retrieve(req.query, top_k=req.top_k, tenant=_tenant_of(request))
-    return {
-        "query": req.query,
-        "hits": [asdict(h) for h in hits],
-    }
-
-
-@app.post("/delete")
-def delete_doc(req: DeleteReq, request: Request) -> dict:
-    tenant = _tenant_of(request)
-    session = get_session()
-    try:
-        ok = delete_document(session, req.source, tenant=tenant)
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-    if ok:
-        get_retrieval_cache().clear()
-    return {"source": req.source, "deleted": ok}
-
-
-@app.post("/query")
-def query(req: QueryReq, request: Request, background: BackgroundTasks) -> dict:
-    tenant = _tenant_of(request)
-    if req.agent:
-        return _query_agent(req.query, tenant=tenant, top_k=req.top_k)
-    answer = answer_query(req.query, top_k=req.top_k, self_rag=req.self_rag,
-                          user_id=req.user_id, tenant=tenant)
-    _schedule_writeback(background, req.user_id, req.query, answer.text, tenant)
-    return asdict(answer)
-
-
-def _query_agent(query: str, *, tenant: str | None, top_k: int | None) -> dict:
-    """agent 模式：有界工具循环产出带依据的答案；工具只走受控检索（主 LLM 不隐式联网）。"""
-    from app.agent.react import run_agent
-    from app.evaluation.trajectory import summarize_trajectories
-    from app.retrieval.retriever import retrieve
-    from app.search.web_search import web_search as _ws
-
-    def kb_search(q: str, top_k_: int = 5):
-        return [{"source": c.source, "score": round(c.score, 4), "snippet": c.content[:200]}
-                for c in retrieve(q, top_k=top_k_ or top_k or 5)]
-
-    tools = {"kb_search": kb_search, "web_search": lambda q, max_results=5: [
-        {"url": c.metadata.get("url"), "snippet": c.content[:200]} for c in _ws(q, max_results)]}
-    traj = run_agent(f"请检索并回答（末尾给出依据来源）：{query}", llm=get_llm(), tools=tools, max_steps=4)
-    sources = sorted({s.get("source") or s.get("url") for st in traj["steps"]
-                      for s in _parse_obs(st.get("observation")) if (s.get("source") or s.get("url"))})
-    return {"query": query, "text": traj.get("final") or "（未收敛）",
-            "sources": sources, "mode": "agent", "status": traj["status"],
-            "metrics": summarize_trajectories([traj])}
-
-
-def _parse_obs(obs):
-    import json
-    try:
-        v = json.loads(obs or "[]")
-        return v if isinstance(v, list) else []
-    except (ValueError, TypeError):
-        return []
-
-
-@app.post("/chat")
-def chat(req: ChatReq, request: Request, background: BackgroundTasks) -> dict:
-    """多轮问答：带上历史，服务端做查询改写后检索生成。"""
-    tenant = _tenant_of(request)
-    answer = answer_query(req.query, top_k=req.top_k, history=req.history,
-                          self_rag=req.self_rag, user_id=req.user_id, tenant=tenant)
-    _schedule_writeback(background, req.user_id, req.query, answer.text, tenant)
-    return asdict(answer)
-
-
-_log_api = get_logger("api")
-
-
-def _schedule_writeback(background: BackgroundTasks, user_id, query, answer_text, tenant=None) -> None:
-    if not (get_settings().memory_enabled and user_id):
-        return
-    background.add_task(_do_writeback, user_id, query, answer_text, tenant)
-
-
-def _do_writeback(user_id: str, query: str, answer_text: str, tenant: str | None = None) -> None:
-    """sleep-time：回答之后后台写回，失败不影响已返回的响应。"""
-    s = get_settings()
-    session = get_session()
-    try:
-        conv = f"用户：{query}\n助手：{answer_text}"
-        run_writeback(session=session, conversation=conv, user_id=user_id,
-                      llm=get_llm(), embedder=get_embedder(),
-                      dedup_sim=s.memory_dedup_sim, promote_threshold=s.memory_promote_support,
-                      tenant=tenant)
-    except Exception as e:  # noqa: BLE001
-        session.rollback()
-        _log_api.warning("writeback_failed", err=str(e)[:160])
-    finally:
-        session.close()
-
-
-class MemoryPromoteReq(BaseModel):
-    id: int
-    trust: str  # draft|verified|curated
-
-
-class MemoryInvalidateReq(BaseModel):
-    id: int
-
-
-@app.get("/memory")
-def memory_list(request: Request, scope: str | None = None, user_id: str | None = None, limit: int = 50) -> dict:
-    tenant = _tenant_of(request)
-    session = get_session()
-    try:
-        rows = list_memories(session, scope=scope, owner_user_id=user_id, tenant=tenant, limit=limit)
-        return {"count": len(rows), "memories": [
-            {"id": m.id, "scope": m.scope, "owner": m.owner_user_id, "kind": m.kind,
-             "content": m.content, "trust": m.trust, "support": m.support,
-             "valid_at": m.valid_at.isoformat() if m.valid_at else None,
-             "invalid_at": m.invalid_at.isoformat() if m.invalid_at else None}
-            for m in rows]}
-    finally:
-        session.close()
-
-
-@app.post("/memory/promote")
-def memory_promote(req: MemoryPromoteReq, request: Request) -> dict:
-    if req.trust not in ("draft", "verified", "curated"):
-        raise HTTPException(status_code=400, detail="bad trust")
-    tenant = _tenant_of(request)
-    session = get_session()
-    try:
-        ok = set_trust(session, req.id, req.trust, tenant=tenant)
-        session.commit()
-    finally:
-        session.close()
-    if not ok:
-        raise HTTPException(status_code=403, detail="memory not found or not in your tenant")
-    return {"id": req.id, "trust": req.trust, "ok": ok}
-
-
-@app.post("/memory/invalidate")
-def memory_invalidate(req: MemoryInvalidateReq, request: Request) -> dict:
-    tenant = _tenant_of(request)
-    session = get_session()
-    try:
-        ok = mem_invalidate(session, req.id, tenant=tenant)
-        session.commit()
-    finally:
-        session.close()
-    if not ok:
-        raise HTTPException(status_code=403, detail="memory not found or not in your tenant")
-    return {"id": req.id, "invalidated": ok}
-
-
-class MemoryFeedbackReq(BaseModel):
-    id: int
-    ok: bool          # 这条经验按其所行，结果是好是坏
-
-
-@app.post("/memory/feedback")
-def memory_feedback(req: MemoryFeedbackReq, request: Request) -> dict:
-    """P3-C 结果回标：用一条经验后的成败驱动促升/作废（弥补"多源一致≠真相"）。"""
-    tenant = _tenant_of(request)
-    session = get_session()
-    try:
-        action = record_feedback(session, req.id, ok=req.ok, tenant=tenant)
-    finally:
-        session.close()
-    if action is None:
-        raise HTTPException(status_code=403, detail="memory not found or not in your tenant")
-    return {"id": req.id, "ok": req.ok, "action": action}
-
-
-class ResearchReq(BaseModel):
-    topic: str
-    use_kb: bool = True
-    use_web: bool | None = None   # 默认取 config.web_search_enabled
-    max_sections: int = 4
-    user_id: str | None = None
-
-
-class RefineReq(BaseModel):
-    index: int
-    use_kb: bool = True
-    use_web: bool | None = None
-
-
-def _web_flag(use_web) -> bool:
-    return get_settings().web_search_enabled if use_web is None else bool(use_web)
-
-
-def _tenant_of(request: Request) -> str | None:
-    """从签名令牌解析当前租户；未启用强制时返回 None（单租户，不过滤）。"""
-    try:
-        return resolve_tenant(request.headers.get("X-Tenant"))
-    except TenantError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-
-
-@app.post("/research")
-def research(req: ResearchReq, request: Request) -> dict:
-    tenant = _tenant_of(request)
-    doc = research_agent.research(req.topic, llm=get_llm(), use_kb=req.use_kb,
-                                  use_web=_web_flag(req.use_web), max_sections=req.max_sections,
-                                  tenant=tenant)
-    sid = research_session.create(doc, tenant=tenant)
-    return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
-
-
-@app.get("/research/{sid}")
-def research_get(sid: str, request: Request) -> dict:
-    doc = research_session.get(sid, tenant=_tenant_of(request))
-    if doc is None:
-        raise HTTPException(status_code=404, detail="session not found")
-    return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
-
-
-@app.post("/research/{sid}/refine")
-def research_refine(sid: str, req: RefineReq, request: Request) -> dict:
-    doc = research_session.refine_section(sid, req.index, llm=get_llm(),
-                                          use_kb=req.use_kb, use_web=_web_flag(req.use_web),
-                                          tenant=_tenant_of(request))
-    if doc is None:
-        raise HTTPException(status_code=404, detail="session/section not found")
-    return {"session_id": sid, "doc": doc.to_dict(), "markdown": doc.to_markdown()}
-
-
-class AgentReq(BaseModel):
-    goal: str
-    max_steps: int = 6
-
-
-@app.post("/agent")
-def agent_run(req: AgentReq, request: Request) -> dict:
-    """显式有界 agent 循环：复用 app.tools 工具集（联网只经受控 web_search，主 LLM 不隐式联网）。"""
-    _tenant_of(request)
-    from app.agent.react import run_agent
-    traj = run_agent(req.goal, llm=get_llm(), max_steps=req.max_steps)
-    from app.evaluation.trajectory import summarize_trajectories
-    return {"result": traj, "metrics": summarize_trajectories([traj])}
-
-
-@app.post("/research/{sid}/publish")
-def research_publish_endpoint(sid: str, request: Request, body: dict | None = None) -> dict:
-    """把研究文档的论断沉淀为 knowledge 记忆（draft）；可归属到一个事件(不存在则新建)。"""
-    tenant = _tenant_of(request)
-    doc = research_session.get(sid, tenant=tenant)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="session not found")
-    body = body or {}
-    session = get_session()
-    try:
-        event_id = body.get("event_id")
-        if not event_id and body.get("event_name"):
-            ev = create_event(session, name=body["event_name"], type=body.get("event_type"),
-                              created_by=body.get("created_by"))
-            event_id = ev.id
-        added = research_publish(doc, session=session, embedder=get_embedder(),
-                                tenant=tenant, event_id=event_id)
-        session.commit()
-    finally:
-        session.close()
-    return {"session_id": sid, "published": added, "event_id": event_id, "trust": "draft"}
-
-
-class EventReq(BaseModel):
-    name: str
-    type: str | None = None
-    created_by: str | None = None
-
-
-@app.post("/events")
-def events_create(req: EventReq, request: Request) -> dict:
-    _tenant_of(request)
-    session = get_session()
-    try:
-        ev = create_event(session, name=req.name, type=req.type, created_by=req.created_by)
-        session.commit()
-        return {"id": ev.id, "name": ev.name, "type": ev.type}
-    finally:
-        session.close()
-
-
-@app.get("/events/{event_id}/playbook")
-def events_playbook(event_id: int, request: Request) -> dict:
-    _tenant_of(request)
-    session = get_session()
-    try:
-        return event_playbook(session, event_id)
-    finally:
-        session.close()
+    limiter = get_rate_limiter() if s.rate_limit_enabled else None
+    application.add_middleware(
+        ObservabilityMiddleware,
+        limiter=limiter,
+        api_key=(s.api_key or None),
+        trust_proxy=s.trust_proxy_headers,
+    )
+
+    for module in (health, ops, ingest, search, query, memory, research, events, agent):
+        application.include_router(module.router)
+    return application
+
+
+app = create_app()

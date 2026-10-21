@@ -176,10 +176,13 @@ def get_event(session: Session, event_id: int) -> Event | None:
     return None if (ev is None or ev.is_deleted) else ev
 
 
-def event_playbook(session: Session, event_id: int) -> dict:
-    """整份事件经验档案：{event, playbook:[...], facts:[...]}。"""
+def event_playbook(session: Session, event_id: int, tenant: str | None = None) -> dict:
+    """整份事件经验档案：{event, playbook:[...], facts:[...]}。
+
+    tenant 非空时只返回该租户挂在事件下的 memories（事件元数据本身仍为全局）。
+    """
     ev = get_event(session, event_id)
-    mems = list_memories(session, event_id=event_id)
+    mems = list_memories(session, event_id=event_id, tenant=tenant)
     return {
         "event": None if ev is None else {"id": ev.id, "name": ev.name, "type": ev.type, "summary": ev.summary},
         "playbook": [m.content for m in mems if m.level == "playbook"],

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import random
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -87,21 +88,49 @@ class LLMClient:
             return True
         return False
 
-    def _call_once(self, p: Provider, system: str, user: str, temperature: float) -> str:
-        kwargs = {}
+    @staticmethod
+    def _messages(system: str, user: str) -> list[dict]:
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    @staticmethod
+    def _request_kwargs(p: Provider, temperature: float) -> dict:
+        kwargs = {"temperature": temperature}
         if p.thinking is not None:
             kwargs["extra_body"] = {"thinking": {"type": p.thinking}}
-        resp = self._client(p).chat.completions.create(
-            model=p.model,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            temperature=temperature,
-            **kwargs,
-        )
-        usage = getattr(resp, "usage", None)
+        return kwargs
+
+    @staticmethod
+    def _record_usage(usage) -> None:
         if usage:
             LLM_TOKENS.labels(type="input").inc(usage.prompt_tokens or 0)
             LLM_TOKENS.labels(type="output").inc(usage.completion_tokens or 0)
+
+    def _call_once(self, p: Provider, system: str, user: str, temperature: float) -> str:
+        resp = self._client(p).chat.completions.create(
+            model=p.model,
+            messages=self._messages(system, user),
+            **self._request_kwargs(p, temperature),
+        )
+        self._record_usage(getattr(resp, "usage", None))
         return resp.choices[0].message.content or ""
+
+    def _stream_once(self, p: Provider, system: str, user: str,
+                     temperature: float) -> Iterator[str]:
+        stream = self._client(p).chat.completions.create(
+            model=p.model,
+            messages=self._messages(system, user),
+            stream=True,
+            **self._request_kwargs(p, temperature),
+        )
+        for chunk in stream:
+            self._record_usage(getattr(chunk, "usage", None))
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            text = getattr(delta, "content", None) if delta is not None else None
+            if text:
+                yield text
 
     def complete(self, system: str, user: str, temperature: float = 0.1) -> str:
         last_err: Exception | None = None
@@ -120,6 +149,40 @@ class LLMClient:
                         LLM_REQUESTS.labels(provider=p.name, outcome="error").inc()
                         log_event(_log, "error", "llm_non_retryable", provider=p.name, err=str(e)[:180])
                         break  # 换下一个 provider
+                    LLM_RETRIES.labels(provider=p.name).inc()
+                    if attempt < self.max_retries - 1:
+                        delay = self.base_delay * (2 ** attempt) + random.uniform(0, 0.2)
+                        time.sleep(delay)
+            LLM_REQUESTS.labels(provider=p.name, outcome="error").inc()
+        raise LLMUnavailable(f"所有 LLM provider 均不可用: {last_err}")
+
+    def stream(self, system: str, user: str, temperature: float = 0.1) -> Iterator[str]:
+        """流式生成：首个 token 前可重试/降级；已输出后失败直接抛，避免重复输出。"""
+        last_err: Exception | None = None
+        for i, p in enumerate(self.chain):
+            if i > 0:
+                LLM_FALLBACKS.inc()
+                log_event(_log, "warning", "llm_fallback", to=p.name)
+            for attempt in range(self.max_retries):
+                got = False
+                try:
+                    for delta in self._stream_once(p, system, user, temperature):
+                        got = True
+                        yield delta
+                    LLM_REQUESTS.labels(provider=p.name, outcome="ok").inc()
+                    return
+                except Exception as e:  # noqa: BLE001
+                    last_err = e
+                    if got:
+                        # 已经向客户端输出过 token，重试会重复答案；直接失败交给上层收尾
+                        LLM_REQUESTS.labels(provider=p.name, outcome="error").inc()
+                        log_event(_log, "error", "llm_stream_interrupted",
+                                  provider=p.name, err=str(e)[:180])
+                        raise
+                    if not self._is_retryable(e, self._retryable, self._status_err):
+                        log_event(_log, "error", "llm_non_retryable",
+                                  provider=p.name, err=str(e)[:180])
+                        break
                     LLM_RETRIES.labels(provider=p.name).inc()
                     if attempt < self.max_retries - 1:
                         delay = self.base_delay * (2 ** attempt) + random.uniform(0, 0.2)
