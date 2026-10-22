@@ -4,14 +4,17 @@
 | SLI | 目标(SLO) | 度量 | 依据指标 |
 |---|---|---|---|
 | 可用性 | 错误率 < 1% / 30天 | 5m 5xx 占比 | `bagent_http_requests_total{status=~"5.."}` |
-| 延迟 | p95 < 3s | 5m p95 | `bagent_http_request_seconds`（直方图）|
+| 延迟（缓存命中） | p95 < 1s | 5m p95 | `bagent_http_request_seconds`（直方图）|
+| 延迟（冷查询） | p95 < 7s | 5m p95 | `bagent_http_request_seconds`（直方图）|
 | 检索缓存命中 | > 30%（热点查询） | 15m hit 率 | `bagent_retrieval_cache_total{result}` |
 | 主 provider 韧性 | 降级率 < 5% | 5m fallback 率 | `bagent_llm_fallbacks_total` |
 
 **误差预算(error budget)**：30 天窗口下 1% 即预算上限；告警用**消耗速率(burn rate)** 触发（见 `deploy/prometheus/slo.rules.yml`），错误率>1% 持续 5m 触发 page。
 
 ## 2. 阈值为何这么定（不空谈）
-- p95 用 3s 而非行业"200ms"：**诚实反映本栈瓶颈是 CPU rerank**（M6 实测 /search 单 worker ~0.29 req/s、p99 数十秒量级在 candidate_n=20 时）。阈值随 candidate_n/后端(onnx int8)/是否外置推理服务而变，**上线后按实测校准**，不写一个跑不到的漂亮数。
+- 延迟 SLO 分两档，因为两类请求的成本完全不同：缓存命中的查询只走一次向量检索（p95 < 1s）；冷查询要跑 embedding + Cross-Encoder rerank（p95 < 7s）。
+- 2026-10-22 云服务器实测（4 核 / 3.7G，`RERANKER_BACKEND=onnx` int8，10 并发，检索缓存关闭）：冷查询 **p95 6.1s、p99 6.6s、吞吐 1.88 req/s**；缓存开启时 50 并发可达 34 req/s，但那是 4 个固定 query 全命中缓存，**不能当作检索能力**。
+- 原 “p95 < 3s” 单一阈值与实测不符，已废弃；阈值随 candidate_n / rerank 后端 / 是否外置推理服务而变，变更后按新实测重新校准，不写一个跑不到的漂亮数。
 - 延迟预算与成本预算联动：p95 逼近 SLO 时，可临时调低 `retrieval_candidate_n` 或启用成本降级。
 
 ## 3. 成本预算与自动降级（`request_token_budget`）

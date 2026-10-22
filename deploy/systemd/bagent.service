@@ -1,0 +1,31 @@
+# Bagent RAG API —— systemd 托管单元（云服务器部署用）
+#
+# 安装：
+#   sudo cp deploy/systemd/bagent.service /etc/systemd/system/bagent.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now bagent
+#
+# 说明：
+# - 路径按本仓在服务器上的实际位置（/opt/bagent/Bagent）填写，换部署机需同步改。
+# - 应用自己从 WorkingDirectory 下的 .env 读配置，无需 EnvironmentFile。
+# - 用 systemd 的 Restart=always 替代裸 setsid：kill -9 后实测 9 秒自愈。
+# - 若走 nginx 子路径反代（见 deploy/nginx/bagent-location.conf），
+#   ExecStart 必须带 --root-path /bagent，否则 /docs 与页面内绝对路径会 404。
+
+[Unit]
+Description=Bagent RAG API (uvicorn)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/bagent/Bagent
+ExecStart=/opt/bagent/.appenv/bin/uvicorn app.api.main:app --host 127.0.0.1 --port 8000 --root-path /bagent
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

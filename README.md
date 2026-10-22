@@ -325,43 +325,42 @@ join documents 过滤 `is_deleted`；新增按 `source` 的 upsert（内容变�
 ——CPU 上的 Cross-Encoder rerank 是吞吐天花板，比其余环节慢 ~180×。`candidate_n` 同时是**质量旋钮与延迟旋钮**（降到5 → 吞吐×5、p99 30s→5.8s）。
 **生产优化方向**：rerank 移到独立批量推理服务(TEI/Triton/GPU)、多 worker 水平扩（需处理 BM25 内存副本与 Prometheus 多进程）、或自适应 candidate_n。（本环境无 GPU 是根本约束。）
 
-## P3 ????????????MCP?????
+## P3 生产闭环与 MCP 网关（durable runtime）
 
-P3 ? P1/P2 ????????????????
+P3 在 P1/P2 基础上补齐"可恢复、可审计、可接入"的生产能力，重点不是加功能，而是让已有的 Agent 循环在崩溃、审批、外部工具接入下仍然可控。
 
-- **?????**?run lease + heartbeat + ???? worker?`scripts/agent_worker.py`???? `docker compose` ? `agent-worker`?
-- **???????**?`tool_operations` ????????????????????????? `/agent/runs/{run_id}/operations`?
-- **?????**?`publish_research` ?????????? knowledge?draft????? + `agent:research` scope?
-- **MCP gateway**?`mcp__<server>__<tool>` ?????deny-by-default allowlist?schema pin????`/mcp/tools`?`/mcp/call`?
-- **???**?`/workbench` ?? run?????/??/???????/??/??????????
-- **?????**???????? `observation_full`??????????? `/agent/runs/{run_id}/steps/{index}`?
-- **??**?HS256 JWT + ?? OIDC/JWKS?RS256/ES256??MCP ?????????????
-- **??????**?`scripts/eval_agent_live.py` ???? LLM pass^k?Prometheus ??????????MCP ???
+- **持久化运行**：一次 run 写 `agent_runs`、每步写 `agent_steps`；`lease_owner + lease_until` 防多实例并发执行；崩溃恢复 worker `scripts/agent_worker.py` 扫描过期租约续跑，`docker compose` 内置 `agent-worker`。
+- **副作用账本**：`tool_operations` 记录稳定幂等键 `run_id:step_index:tool:sha256(args)[:16]` 与状态 `started/succeeded/failed/unknown`；`succeeded` 直接回放，`started/unknown` 返回 `unknown_outcome` 不自动重试，账本不可用时不执行副作用工具；`GET /agent/runs/{run_id}/operations` 查询。
+- **研究发布**：`publish_research` 把研究论断写入 knowledge（draft），受 trust 门控与 `agent:research` scope 约束。
+- **MCP 网关**：`mcp__<server>__<tool>` 命名空间、deny-by-default allowlist、schema pin（默认阻断变更）、审计不记录参数与返回正文；`GET /mcp/tools`、`POST /mcp/call`。
+- **工作台**：`/workbench` 发起 run、查看 step/tool/approval 事件、审批/拒绝/取消、重放事件；无构建链，单文件 HTML。
+- **完整观测结果**：`agent_steps.observation` 只存 1500 字预览，完整结果在 `observation_full`，按需 `GET /agent/runs/{run_id}/steps/{step_index}`。
+- **身份与授权**：默认关闭；HS256 JWT，配置 `OIDC_JWKS_URL` 后走 RS256/ES256 并校验 issuer/audience/exp；Agent 端点检查 run owner，MCP 端点检查 `agent:mcp` scope。
+- **评测**：`tests/test_agent_eval_cases.py` 用 23 个 mock 任务在 CI 断言 pass^k、工具序列、政策违规为 0；`scripts/eval_agent_live.py` 跑真实 LLM 评测（不进 CI）。
 
-### ????
+### 快速开始
 
 ```bash
 # API
 uvicorn app.api.main:app --host 127.0.0.1 --port 8000
-# ???
-# http://127.0.0.1:8000/workbench
+# 工作台：http://127.0.0.1:8000/workbench
 
-# ???? worker?? init schema?
+# 崩溃恢复 worker（需先 init schema）
 python scripts/agent_worker.py --once
 python scripts/agent_worker.py --poll 5
 
-# ??????? API key??? CI ??
+# 真实评测（需外部 API key，不跑 CI）
 python scripts/eval_agent_live.py --limit 5 --k 1
 
-# MCP stdio ???? requirements-mcp.txt ??????
+# MCP stdio 冒烟（用 requirements-mcp.txt 独立环境）
 python scripts/mcp_smoke.py
 ```
 
-### ??
+### 配置
 
-- `AUTH_ENABLED` / `JWT_*`??????OIDC ?? `OIDC_JWKS_URL` / `OIDC_ISSUER` ????
-- `AGENT_LEASE_TTL_S` / `AGENT_WORKER_POLL_S` / `AGENT_RECOVERY_LIMIT`??? worker?
-- `MCP_GATEWAY_SERVERS` / `MCP_GATEWAY_ALLOWLIST` / `MCP_GATEWAY_SCHEMA_PINS` / `MCP_GATEWAY_TIMEOUT_S`?MCP gateway?
-- `AGENT_CONTEXT_MAX_CHARS` / `AGENT_KEEP_RECENT_STEPS`?????????
+- `AUTH_ENABLED` / `JWT_*`：身份层；OIDC 用 `OIDC_JWKS_URL` / `OIDC_ISSUER`
+- `AGENT_LEASE_TTL_S` / `AGENT_WORKER_POLL_S` / `AGENT_RECOVERY_LIMIT`：租约与 worker
+- `MCP_GATEWAY_SERVERS` / `MCP_GATEWAY_ALLOWLIST` / `MCP_GATEWAY_SCHEMA_PINS` / `MCP_GATEWAY_TIMEOUT_S`：MCP 网关
+- `AGENT_CONTEXT_MAX_CHARS` / `AGENT_KEEP_RECENT_STEPS`：上下文压缩
 
-????? `docs/Agent-?????.md`?`docs/MCP-??.md`?`docs/??????.md`?
+详见 `docs/Agent-运行与恢复.md`、`docs/MCP-网关.md`、`docs/评测与可观测.md`。
