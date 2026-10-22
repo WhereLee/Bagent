@@ -57,7 +57,8 @@ class Reranker:
         return [float(x) for x in scores]
 
 
-_reranker: Reranker | None = None
+_reranker: Reranker | OnnxReranker | None = None
+_reranker_lock = threading.Lock()
 _sem: threading.BoundedSemaphore | None = None
 _sem_limit: int | None = None
 _sem_lock = threading.Lock()
@@ -128,15 +129,19 @@ def _build_reranker() -> Reranker | OnnxReranker:
 
 
 def get_reranker() -> Reranker | OnnxReranker:
+    """线程安全单例：并发首次调用只构造一次（冷启动竞态会重复加载模型）。"""
     global _reranker
     if _reranker is None:
-        _reranker = _build_reranker()
+        with _reranker_lock:
+            if _reranker is None:
+                _reranker = _build_reranker()
     return _reranker
 
 
 def reset_reranker() -> None:
     global _reranker, _sem, _sem_limit
-    _reranker = None
+    with _reranker_lock:
+        _reranker = None
     with _sem_lock:
         _sem = None
         _sem_limit = None

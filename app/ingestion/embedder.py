@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from functools import lru_cache
+import threading
 
 import numpy as np
 
@@ -49,6 +49,25 @@ class Embedder:
         )[0].astype(np.float32)
 
 
-@lru_cache
+_embedder: Embedder | None = None
+_embedder_lock = threading.Lock()
+
+
 def get_embedder() -> Embedder:
-    return Embedder()
+    """线程安全单例：并发首次调用只构造一次。
+
+    lru_cache 只锁缓存读写、不锁工厂执行；并发首次未命中会重复构造
+    SentenceTransformer，触发 meta tensor 错误（云上冷查询压测复现）。
+    """
+    global _embedder
+    if _embedder is None:
+        with _embedder_lock:
+            if _embedder is None:
+                _embedder = Embedder()
+    return _embedder
+
+
+def reset_embedder() -> None:
+    global _embedder
+    with _embedder_lock:
+        _embedder = None
