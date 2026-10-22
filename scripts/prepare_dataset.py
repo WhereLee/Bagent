@@ -4,6 +4,9 @@
 集成脚本，不进 CI。
 用法： .venv\\Scripts\\python.exe scripts\\prepare_dataset.py [--queries 80] [--passages 1200]
 强制重下： 设环境变量 DU_FORCE_REFRESH=1
+
+依赖说明：命中 data/benchmark/_du_cache.json 时不需要 datasets；
+只有 DU_FORCE_REFRESH=1 强制重下时才需要 `pip install datasets`。
 """
 from __future__ import annotations
 
@@ -21,8 +24,6 @@ os.environ.setdefault("HF_HOME", str(Path(__file__).resolve().parent.parent / "m
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from datasets import load_dataset  # noqa: E402
-
 from app.config import ROOT_DIR, get_settings  # noqa: E402
 from app.db.session import get_session, init_schema  # noqa: E402
 from app.ingestion.chunking import chunk_parent_child  # noqa: E402
@@ -35,6 +36,8 @@ _CACHE = ROOT_DIR / "data" / "benchmark" / "_du_cache.json"
 
 def _fetch_raw(n_passages: int) -> tuple[dict, dict, dict]:
     """流式取原始数据：前 N 段落作语料；queries 全量；qrels 仅保留 gold 落在语料内的查询。"""
+    from datasets import load_dataset  # 只有强制重下才需要，缓存路径不 import
+
     passages: dict[str, str] = {}
     for row in load_dataset("C-MTEB/DuRetrieval", streaming=True)["corpus"]:
         passages[row["id"]] = row["text"]
