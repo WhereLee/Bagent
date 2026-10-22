@@ -319,6 +319,14 @@ join documents 过滤 `is_deleted`；新增按 `source` 的 upsert（内容变�
 | hybrid+rerank candidate_n=5 | 4.2s | 5.8s | **1.58 req/s** | 0 |
 | /health | 16ms | — | — | 0 |
 
+**两套压测脚本，用途不同**：
+- `locustfile.py`：4 条内置 query，只适合冒烟；命中检索缓存时吞吐会虚高（4 条固定 query、50 并发曾达 34 req/s，不能当作检索能力）。
+- `locust_bench.py`：读 `data/benchmark/duretrieval.jsonl` 的 600 条真实 query，查询分散、缓存命中率低，测冷查询真实成本。云端 4 核/3.7G、`RERANKER_BACKEND=onnx`、10 并发实测（2026-10-22）：82 请求 0 失败，中位数 6.5s，p95 7.8s、p99 8.5s，吞吐 **1.37 req/s**。
+
+```bash
+locust -f locust_bench.py --host http://127.0.0.1:8000 --headless -u 10 -r 2 -t 60s
+```
+
 **BM25 微基准（合成数据，非真实语料）**：`scripts/bench_bm25.py` 1 万文档 / 200 查询，倒排索引查询 0.10~0.16s vs 旧全量扫描 1.43~2.16s（本机两次运行约 **13~15×**），top-K 200/200 一致；真实召回质量仍以 `scripts/eval_retrieval.py` 为准。
 
 **瓶颈定位（靠 /metrics 阶段计时）**：retrieval 阶段 25.6s 里 **rerank 占 25.5s**，embedding+pgvector 仅 ~0.1s
